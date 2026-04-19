@@ -457,6 +457,25 @@ class GlassPanel(QWidget):
 # The big circular state button — custom-painted so we can animate per state
 # ==========================================================================
 
+class InvisibleContainer(QWidget):
+    """A QWidget whose paintEvent is a hard no-op — it never draws
+    anything, not even a palette background. Used for layout-only
+    containers that sit above the GlassPanel's rounded fill; without
+    this, Qt's style engine paints a default rectangular background
+    on any widget that receives a stylesheet rule (even transparent
+    ones), which covered the rounded top corners with a sharp dark
+    fill. Children paint normally; only the container itself is silent."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+
+    def paintEvent(self, event):
+        # Deliberately empty — no bg, no border, no frame. Children paint
+        # via their own paintEvents; they're still visible.
+        pass
+
+
 class TickerLine(QWidget):
     """News-ticker-style horizontally scrolling label. Displays a single
     string; if it's wider than the widget, it crawls leftward, wrapping
@@ -2030,11 +2049,13 @@ class BeeperWidget(QWidget):
         # glass body. The ☰ playlist button is pinned hard-left (only a
         # thin 2 px inset so the border doesn't touch the glass rim);
         # tabs after it share the remaining width equally via stretch=1.
-        self.tabbar = QWidget(container)
+        # Tab strip uses InvisibleContainer so the widget itself never
+        # paints anything — only the tab buttons inside it paint. That
+        # keeps the 10-px outer band (where tabs aren't) fully transparent,
+        # so the rounded glass corner beneath shows through.
+        self.tabbar = InvisibleContainer(container)
         self.tabbar.setObjectName("tabbar")
         self.tabbar.setFixedHeight(36)
-        self.tabbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.tabbar.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
         # Left/right margins push tab children safely inside the glass's
         # 22-px rounded corners so nothing pokes past the curve. At y~=14
@@ -2058,10 +2079,8 @@ class BeeperWidget(QWidget):
 
         # Inset container for everything below the tab strip. This is
         # where the generous 16 px side gutters live.
-        body_wrap = QWidget(container)
+        body_wrap = InvisibleContainer(container)
         body_wrap.setObjectName("body_wrap")
-        body_wrap.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        body_wrap.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         root.addWidget(body_wrap, stretch=1)
         root = QVBoxLayout(body_wrap)
         root.setContentsMargins(16, 4, 16, 12)
@@ -2110,9 +2129,8 @@ class BeeperWidget(QWidget):
 
         # Middle: context bar + time-style labels (wrapped so compact mode
         # can hide the whole row atomically).
-        self.mid_row = QWidget(body_wrap)
+        self.mid_row = InvisibleContainer(body_wrap)
         self.mid_row.setObjectName("mid_row")
-        self.mid_row.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         mid = QHBoxLayout(self.mid_row); mid.setContentsMargins(0, 0, 0, 0); mid.setSpacing(8)
         self.lbl_ctx_used = QLabel(""); self.lbl_ctx_used.setObjectName("ctxTime")
         self.lbl_ctx_used.setMinimumWidth(44)
@@ -2132,9 +2150,8 @@ class BeeperWidget(QWidget):
         root.addWidget(self.lbl_meta)
 
         # Bottom controls (wrapped so compact mode can hide the whole row)
-        self.btns_row = QWidget(body_wrap)
+        self.btns_row = InvisibleContainer(body_wrap)
         self.btns_row.setObjectName("btns_row")
-        self.btns_row.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         btns = QHBoxLayout(self.btns_row); btns.setContentsMargins(0, 0, 0, 0); btns.setSpacing(6)
         self.btn_rename = QPushButton("✎ Rename"); self.btn_rename.setObjectName("smallBtn")
         self.btn_prev   = QPushButton("◀");         self.btn_prev.setObjectName("arrowCircle")
@@ -2265,6 +2282,14 @@ class BeeperWidget(QWidget):
         x = scr.right() - self.width() - margin if "right" in corner else scr.left() + margin
         y = scr.bottom() - self.height() - margin if "bottom" in corner else scr.top() + margin
         self.move(x, y)
+
+    def paintEvent(self, event):
+        # Hard no-op at the root. GlassPanel (first child, lowered to
+        # z=0) paints the rounded fill. Anything else Qt might have
+        # painted here (palette Window colour when the widget is
+        # "styled" because setStyleSheet was called) would show as a
+        # sharp-cornered rectangle outside the rounded path.
+        pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
