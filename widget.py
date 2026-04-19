@@ -1510,6 +1510,14 @@ class BeeperWidget(QMainWindow):
         self.sprite.setScaledContents(False)
         self.sprite.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sprite.mousePressEvent = self._on_sprite_click  # type: ignore[assignment]
+        # Opacity effect for state-change crossfade. Qt's opacity effect
+        # paints the label into a backing store and blends by alpha —
+        # cheap enough for a 150 ms transition every few seconds.
+        self._sprite_opacity = QGraphicsOpacityEffect(self.sprite)
+        self._sprite_opacity.setOpacity(1.0)
+        self.sprite.setGraphicsEffect(self._sprite_opacity)
+        self._sprite_fade: QPropertyAnimation | None = None
+        self._last_sprite_fname: str | None = None
         top.addWidget(self.sprite)
 
         titles = QVBoxLayout(); titles.setSpacing(1)
@@ -1793,6 +1801,53 @@ class BeeperWidget(QMainWindow):
             return float(scr.devicePixelRatio()) if scr is not None else 1.0
         except Exception:
             return 1.0
+
+    def _set_sprite(self, fname: str, size_logical: int) -> None:
+        """Swap the sprite with a 150 ms opacity crossfade on state
+        change. No-op when fname is unchanged (avoids a fade on every
+        poll). Instant swap on the first-ever set."""
+        pm = self._sprite_pixmap(fname, size_logical)
+        if pm.isNull():
+            return
+        same = (fname == self._last_sprite_fname)
+        first_ever = self._last_sprite_fname is None
+        self._last_sprite_fname = fname
+        if same:
+            # Same state — just refresh pixmap (in case compact toggled
+            # and size changed), no animation.
+            self.sprite.setPixmap(pm)
+            return
+        if first_ever:
+            self.sprite.setPixmap(pm)
+            return
+
+        # Cancel any in-flight fade so rapid transitions don't stack.
+        anim = self._sprite_fade
+        if anim is not None and anim.state() == QPropertyAnimation.State.Running:
+            anim.stop()
+
+        fade_out = QPropertyAnimation(self._sprite_opacity, b"opacity", self)
+        fade_out.setDuration(75)
+        fade_out.setStartValue(self._sprite_opacity.opacity())
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        def _swap_and_fade_in():
+            self.sprite.setPixmap(pm)
+            fade_in = QPropertyAnimation(self._sprite_opacity, b"opacity", self)
+            fade_in.setDuration(75)
+            fade_in.setStartValue(0.0)
+            fade_in.setEndValue(1.0)
+            fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            # Safety: Qt may clean up the animation object before the
+            # property quite settles on the end value; pin it manually.
+            fade_in.finished.connect(lambda: self._sprite_opacity.setOpacity(1.0))
+            fade_in.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+            self._sprite_fade = fade_in
+
+        fade_out.finished.connect(_swap_and_fade_in)
+        fade_out.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        self._sprite_fade = fade_out
 
     def _sprite_pixmap(self, fname: str, size_logical: int) -> QPixmap:
         """Return a DPI-aware pixmap sized for the sprite label.
@@ -2105,9 +2160,7 @@ class BeeperWidget(QMainWindow):
         self.ticker.setText("")
         self.btn_action.set_state("idle", "I", "Idle — No Active Sessions")
         sprite_px = 36 if self._compact_mode else 64
-        pm = self._sprite_pixmap("snoozing.png", sprite_px)
-        if not pm.isNull():
-            self.sprite.setPixmap(pm)
+        self._set_sprite("snoozing.png", sprite_px)
 
 
     def _render_session(self, s):
@@ -2176,12 +2229,10 @@ class BeeperWidget(QMainWindow):
             f"Cache {fmt_tokens(stats.get('total_cache_read', 0))}"
         )
 
-        # Sprite (DPI-aware)
+        # Sprite (DPI-aware + 150 ms crossfade on state change)
         fname = STATE_TO_SPRITE.get(state, "snoozing.png")
         sprite_px = 36 if self._compact_mode else 64
-        pm = self._sprite_pixmap(fname, sprite_px)
-        if not pm.isNull():
-            self.sprite.setPixmap(pm)
+        self._set_sprite(fname, sprite_px)
 
         if has_pending and self._popup.isVisible():
             self._popup.show_for(pending[0], self.frameGeometry())

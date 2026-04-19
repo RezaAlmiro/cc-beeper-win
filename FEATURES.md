@@ -189,8 +189,11 @@ before building.
   on toggle-off. Persists in `config.json` under `widget.compact`.
 - **Custom sprite pack** — drop your own 8-bit frames into
   `assets/custom/` and the widget uses those instead
-- **State-transition animations** — fade between sprites instead of
-  instant swap; cross-fade halo colour changes
+- ~~**State-transition animations**~~ — **sprite crossfade shipped.**
+  150 ms opacity crossfade (75 ms fade-out → swap → 75 ms fade-in,
+  `InOutQuad` easing) when the sprite changes. No-op on same-state
+  polls so it only fires on real state transitions. Halo / action-
+  circle colour cross-fade still outstanding.
 - ~~**Multi-monitor awareness**~~ — **shipped.** Position (x / y /
   screen name) is saved on every drag, restored on launch. Falls back
   to "screen containing the stored point" if the remembered monitor
