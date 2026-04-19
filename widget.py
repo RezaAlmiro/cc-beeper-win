@@ -134,47 +134,67 @@ QLabel#reason  { color: #FFBDBD; font-family: Consolas, monospace; font-size: 10
 """
 
 TAB_CSS = """
-QWidget#tabbar { background: rgba(8, 12, 20, 230); }
-/* Default: a session that's in-progress or awaiting attention — red. */
+QWidget#tabbar { background: rgba(8, 12, 20, 245); padding: 0; }
+/* Notebook-folder style: rounded top only, slight negative right-margin
+   so adjacent tabs overlap a little. */
 QPushButton.sessionTab {
     background: rgba(170, 40, 40, 230);
     color: #ffeaea;
-    border: 1px solid transparent;
-    border-bottom: 2px solid transparent;
-    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 40);
+    border-bottom: none;
+    border-top-left-radius: 9px;
+    border-top-right-radius: 9px;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
     font-family: Consolas, 'Courier New', monospace;
-    font-size: 9px; font-weight: 600;
-    padding: 2px 6px;
-    text-align: left;
+    font-size: 11px; font-weight: 700;
+    padding: 6px 10px 10px 10px;
+    margin-right: -6px;
+    text-align: center;
 }
-/* A session whose turn has completed and is waiting for you — green. */
+/* Turn finished, nothing else expected — steady green. */
 QPushButton.sessionTab[tabstate="done"] {
     background: rgba(40, 140, 70, 240);
     color: #e9fff0;
 }
-/* Active tab gets a bright underline regardless of colour state. */
-QPushButton.sessionTab[active="true"] {
-    border-bottom: 2px solid #ffffff;
+/* Turn finished but Claude asked a follow-up — green. */
+QPushButton.sessionTab[tabstate="awaiting"] {
+    background: rgba(60, 200, 110, 245);
+    color: #062615;
 }
-/* Pending approval / attention — flashing bright red (overrides colour). */
-QPushButton.sessionTab[flashing="true"] {
-    background: rgba(255, 94, 94, 240);
+/* Active tab: thicker white top border, sits visually on top. */
+QPushButton.sessionTab[active="true"] {
+    border: 2px solid #ffffff;
+    border-bottom: none;
+    padding: 6px 10px 12px 10px;
+}
+/* Pending approval — flashing bright red (overrides colour). */
+QPushButton.sessionTab[flashing="true"][flash_color="red"] {
+    background: rgba(255, 94, 94, 245);
     color: #0B1020;
-    border-bottom: 2px solid #ff2e2e;
+}
+/* Awaiting user reply — flashing bright green. */
+QPushButton.sessionTab[flashing="true"][flash_color="green"] {
+    background: rgba(95, 230, 140, 245);
+    color: #062615;
 }
 """
 
 METER_CSS = """
-QWidget#meter { background: rgba(8, 12, 20, 240); }
-QLabel#metertext { color: #9FEED9; font-family: Consolas, monospace; font-size: 9px; padding: 1px 4px; }
+QWidget#meter { background: rgba(8, 12, 20, 245); padding: 4px 6px 4px 6px; }
+QLabel#metertext {
+    color: #9FEED9; font-family: Consolas, monospace;
+    font-size: 12px; font-weight: 600; padding: 2px 4px;
+}
 QProgressBar#ctxbar {
-    background: rgba(40, 54, 78, 200);
-    border: none;
-    border-radius: 2px;
+    background: rgba(40, 54, 78, 220);
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 3px;
     text-align: center;
     color: #F2F5FA;
     font-family: Consolas, monospace;
-    font-size: 8px;
+    font-size: 11px;
+    font-weight: 700;
 }
 QProgressBar#ctxbar::chunk { background: #487CFF; border-radius: 2px; }
 QProgressBar#ctxbar[state="hot"]::chunk  { background: #ff7043; }
@@ -552,10 +572,10 @@ class BeeperWidget(QMainWindow):
 
         # --- tab bar ---
         self.tabbar = QWidget(container); self.tabbar.setObjectName("tabbar")
-        self.tabbar.setFixedHeight(22)
+        self.tabbar.setFixedHeight(34)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        self.tabbar_layout.setContentsMargins(3, 2, 3, 2); self.tabbar_layout.setSpacing(2)
-        # NOTE: tabs are inserted with equal stretch so all are the same width.
+        self.tabbar_layout.setContentsMargins(6, 2, 6, 0); self.tabbar_layout.setSpacing(0)
+        # Tabs use margin-right: -6px for notebook-folder overlap; equal stretch.
         root.addWidget(self.tabbar)
 
         # --- sprite ---
@@ -578,12 +598,12 @@ class BeeperWidget(QMainWindow):
         self._border_anim: QPropertyAnimation | None = None
 
         # --- meter ---
-        self.meter = QWidget(container); self.meter.setObjectName("meter"); self.meter.setFixedHeight(30)
+        self.meter = QWidget(container); self.meter.setObjectName("meter"); self.meter.setFixedHeight(56)
         meter_lay = QVBoxLayout(self.meter)
-        meter_lay.setContentsMargins(4, 2, 4, 2); meter_lay.setSpacing(0)
+        meter_lay.setContentsMargins(6, 4, 6, 4); meter_lay.setSpacing(3)
         self.ctx_bar = QProgressBar(self.meter); self.ctx_bar.setObjectName("ctxbar")
         self.ctx_bar.setMinimum(0); self.ctx_bar.setMaximum(100); self.ctx_bar.setValue(0)
-        self.ctx_bar.setFixedHeight(10); self.ctx_bar.setTextVisible(True)
+        self.ctx_bar.setFixedHeight(22); self.ctx_bar.setTextVisible(True)
         self.ctx_bar.setFormat("ctx —")
         self.tok_lbl = QLabel(""); self.tok_lbl.setObjectName("metertext")
         self.tok_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
