@@ -364,6 +364,13 @@ class GlassPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Defensive: ensure no palette background is auto-filled before
+        # paintEvent, so nothing outside the rounded path is opaque.
+        # Without these, a graphics effect (e.g. DropShadow) can rasterize
+        # the widget's rectangular palette fill as the shadow source,
+        # producing a rectangular shadow around rounded paint.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -1545,10 +1552,11 @@ class BeeperWidget(QMainWindow):
 
         # Glass panel background (drawn behind all content)
         self.glass = GlassPanel(container)
-        # Drop shadow outside the panel
-        shadow = QGraphicsDropShadowEffect(self.glass)
-        shadow.setBlurRadius(28); shadow.setOffset(0, 6); shadow.setColor(QColor(0, 0, 0, 90))
-        self.glass.setGraphicsEffect(shadow)
+        # NOTE: QGraphicsDropShadowEffect was removed — Qt's effect
+        # pipeline rasterizes the widget's rectangular buffer as the
+        # shadow source, casting a rectangular penumbra around the
+        # rounded paint and producing visibly sharp corners. A custom
+        # in-paintEvent shadow could be re-added if depth is wanted.
 
         # ---------------- Foreground layout ----------------
         # Root has NO margins: the tab strip hugs the glass top + left
@@ -1567,7 +1575,13 @@ class BeeperWidget(QMainWindow):
         self.tabbar.setFixedHeight(36)
         self.tabbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        self.tabbar_layout.setContentsMargins(2, 4, 6, 0)
+        # Left/right margins push tab children safely inside the glass's
+        # 22-px rounded corners so nothing pokes past the curve. At y~=14
+        # (where the tabs' left edge becomes straight beneath their own
+        # 10-px radius) the glass curve is only at x~=1.5 — tabs at x=2
+        # would poke ~0.9 px outside as a visible nub. 10-px margin
+        # clears the corner entirely.
+        self.tabbar_layout.setContentsMargins(10, 4, 10, 0)
         self.tabbar_layout.setSpacing(2)
 
         self.btn_playlist = QPushButton("☰", self.tabbar)
