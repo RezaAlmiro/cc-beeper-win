@@ -460,7 +460,14 @@ class GlassPanel(QWidget):
 class TickerLine(QWidget):
     """News-ticker-style horizontally scrolling label. Displays a single
     string; if it's wider than the widget, it crawls leftward, wrapping
-    seamlessly. Stationary (no animation) when the text already fits."""
+    seamlessly. Stationary (no animation) when the text already fits.
+
+    Scroll position is preserved across text changes — the upstream
+    poll refreshes the text ~2 Hz (elapsed-time tick, context-% tick),
+    and snapping back to the left edge on every refresh is what read
+    as "jerking / repeating" to users. Instead we keep the current
+    pixel offset and wrap it modulo the new content width, so the
+    ticker flows continuously as if the ribbon were infinite."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -468,17 +475,36 @@ class TickerLine(QWidget):
         self.setFixedHeight(20)
         self._text = ""
         self._scroll_x = 0.0
-        self._speed = 1.3       # pixels per tick
+        # Px per second at steady state. Converted to per-frame step
+        # inside _tick based on actual elapsed wall-clock time so the
+        # motion is independent of frame rate / occasional timer jitter.
+        self._speed_pps = 42.0
+        self._last_tick_ms = 0
         self._timer = QTimer(self)
-        self._timer.setInterval(35)   # ~28 fps
+        self._timer.setInterval(16)   # ~60 fps — visibly smoother than 35 ms
         self._timer.timeout.connect(self._tick)
 
     def setText(self, text: str) -> None:
         text = (text or "").strip()
         if text == self._text:
             return
+        prev_empty = (self._text == "")
         self._text = text
-        self._scroll_x = 0.0
+        # Start fresh only when coming from a truly blank ticker. For
+        # any in-flight content change (time tick / context bump /
+        # state flip), keep the current scroll position and re-normalise
+        # against the new content width so nothing snaps.
+        if prev_empty:
+            self._scroll_x = 0.0
+        else:
+            fm = self.fontMetrics()
+            new_w = fm.horizontalAdvance(self._ticker_string())
+            if new_w > 0:
+                # Bring scroll_x into the canonical [-new_w, 0] range.
+                sx = self._scroll_x % new_w
+                if sx > 0:
+                    sx -= new_w
+                self._scroll_x = sx
         self._configure_timer()
         self.update()
 
@@ -495,19 +521,31 @@ class TickerLine(QWidget):
         if text_w <= self.width():
             self._timer.stop()
             self._scroll_x = 0.0
-        else:
-            if not self._timer.isActive():
-                self._timer.start()
+            self.update()
+            return
+        if not self._timer.isActive():
+            # Seed the wall-clock reference so the first frame doesn't
+            # apply a huge dt if the timer has been idle a while.
+            self._last_tick_ms = int(time.monotonic() * 1000)
+            self._timer.start()
 
     def _ticker_string(self) -> str:
         # Separator between repeats so the scroll never shows a flush-join.
         return self._text + "    ·    "
 
     def _tick(self):
-        self._scroll_x -= self._speed
+        # Time-based step — immune to frame-rate variance and paint
+        # hiccups. With 60 fps and 42 px/s, dt≈16 ms and step≈0.67 px.
+        now = int(time.monotonic() * 1000)
+        dt_ms = now - self._last_tick_ms if self._last_tick_ms else self._timer.interval()
+        self._last_tick_ms = now
+        # Clamp dt so a background pause doesn't hurl the ticker across.
+        if dt_ms > 120:
+            dt_ms = 120
+        self._scroll_x -= self._speed_pps * (dt_ms / 1000.0)
         fm = self.fontMetrics()
         text_w = fm.horizontalAdvance(self._ticker_string())
-        if self._scroll_x <= -text_w:
+        if text_w > 0 and self._scroll_x <= -text_w:
             self._scroll_x += text_w
         self.update()
 
@@ -515,7 +553,9 @@ class TickerLine(QWidget):
         if not self._text:
             return
         p = QPainter(self)
+        # Both hints: smooth text + sub-pixel positioning.
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         font = QFont("Segoe UI"); font.setPointSize(9); font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
         fm = p.fontMetrics()
@@ -526,10 +566,14 @@ class TickerLine(QWidget):
         if text_w <= self.width():
             p.drawText(0, y, self._text)
             return
-        # Scroll mode — draw two copies side-by-side so wrap-around is seamless
-        x = int(self._scroll_x)
-        p.drawText(x, y, text)
-        p.drawText(x + text_w, y, text)
+        # Scroll mode — draw at fractional x via QPointF so sub-pixel
+        # motion is preserved (Qt uses greyscale anti-aliasing to shift
+        # the glyph between pixels — critical for smooth-looking scroll
+        # at 42 px/s). Two copies for seamless wrap.
+        from PySide6.QtCore import QPointF
+        x = float(self._scroll_x)
+        p.drawText(QPointF(x, float(y)), text)
+        p.drawText(QPointF(x + text_w, float(y)), text)
 
 
 class ActionCircle(QWidget):
