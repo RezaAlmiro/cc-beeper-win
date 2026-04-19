@@ -19,42 +19,108 @@ ladder, context + token meters, and a small pixel-art pet bedroom.
 
 ## What it does
 
-- **Floating always-on-top widget** (180×120, drag anywhere) that lives in
-  the corner of your screen and reacts live to your Claude Code session.
-- **Tab strip**, one tab per active Claude Code session. Click a tab to
-  switch view. Tabs go **red** by default (work in progress) and turn
-  **green** the moment a turn finishes, so a glance tells you which
-  sessions are still running and which are waiting on your reply.
-- **Click-to-focus terminal**. Clicking the sprite brings the terminal
-  tab that hosts the active Claude session back to the foreground —
-  resolved at hook time via the process tree so it works even with
-  multiple Windows Terminal tabs open.
-- **4-way approval ladder**. When Claude wants permission for a tool, the
-  widget flashes red (halo + border pulse) and a small popup offers:
-  - *Allow once*
-  - *Allow for this session*
-  - *Allow forever (this category)*
-  - *Deny*
+A resizable frosted-glass HUD pinned on top of everything, one row per
+Claude Code session. Every surface is state-coded so a glance tells you
+what's waiting on you.
 
-  Scopes are remembered — "allow forever" categories survive restarts
-  via `trust.json`, and a **Manage trust…** dialog lets you view and
-  remove any approval later.
-- **Context + token meter**. Reads the session transcript directly. Shows
-  model (auto-detected), current context usage as a bar (green / orange /
-  red), and lifetime input / output / cache-read totals.
-- **Three strategies** (tray menu):
-  - `assist` — widget is the permission UI (default)
-  - `observer` — never override Claude; just monitor
-  - `auto` — headless rules + optional Gemini classifier, no popup
-- **Four modes** govern what's auto-allowed without prompting: `strict`,
-  `relaxed`, `trusted`, `yolo`.
-- **Safety net** — catastrophic Bash commands (`rm -rf /`,
-  `git push --force`, `drop table`, `mkfs`…) are always hard-denied at
-  the hook, even in YOLO mode.
-- **Optional Gemini Flash classifier** — if you set `GEMINI_API_KEY` and
-  flip `security.gemini_enabled` in `config.json`, risky auto-allowed
-  tool calls get a ~300 ms sanity check ("does this tool call plausibly
-  serve the stated task?") and get downgraded to a prompt if they don't.
+### Multi-session tab strip
+
+Browser-style tabs across the top of the glass. Each tab has a
+coloured stripe on its top edge matching the session state (grey = idle,
+green = done, amber = working, blue = input needed, orange = approval
+pending, dark red = error). The active tab lifts 2 px and bolds. New
+sessions appear automatically; closed terminals drop their tab within
+~8 seconds. Three ways to switch: click a tab, use the **◀ / ▶** arrows,
+or click the **☰** playlist button on the far left for a dropdown
+listing every session. Right-click any tab to **rename** it — the
+custom name persists for the life of the session.
+
+### Worded state badge + letter-coded action circle
+
+A pill-shaped badge top-right spells the state (`IDLE`, `WORKING`,
+`DONE`, `INPUT`, `APPROVE`, `ERROR`) in the matching colour. A big
+circular button bottom-centre shows a single-letter code — **I / D / W /
+IN / A / E** — with distinctive per-state animation:
+
+- `W` amber with a rotating clock-sweep arc — Claude is working
+- `D` green, steady — turn finished
+- `IN` blue, soft flash — Claude asked a follow-up
+- `A` red with a pulsing red halo ring — tool permission pending
+- `E` dark crimson, fast flash — last turn failed
+- `I` white, steady — idle
+
+Click the circle to approve when pending, otherwise it focuses the
+session's terminal.
+
+### 4-way approval ladder
+
+When Claude wants permission for a tool, a popup offers *Allow once* /
+*Allow for this session* / *Allow forever (this category)* / *Deny*.
+"Forever" survives restarts via `trust.json`. A **Manage trust…** dialog
+(right-click the widget) lets you view and revoke any approval.
+
+### Context + token meter
+
+Reads the session transcript directly: auto-detects the model, shows
+current context usage as a progress bar (green / orange / red), and a
+live line of lifetime input / output / cache-read totals.
+
+### Slash-command dropdown + export
+
+A **⇣ Commands ▾** button on the bottom-right fires `/compact`,
+`/clear`, `/cost`, `/model`, or `/resume` at the active session's
+terminal. At the bottom of that menu: **📄 Export Session Stats To Txt**
+writes a plain-text report covering identity, model, token totals,
+derived economics (cache-hit rate, output/input ratio), insights
+generated from the actual numbers, and tailored token-hygiene tips.
+
+### Click-to-focus terminal
+
+Clicking the sprite or the circle brings the exact terminal tab hosting
+the active Claude session back to the foreground. HWND is resolved at
+hook time via the process tree *and* a window-title fallback, so it
+works even when Windows Terminal re-parents its shells to explorer.
+
+### Melodic sound cues
+
+Three short bell-synth chimes, generated on first run and saved to
+`assets/sounds/`:
+
+- **Approve** — E5 → C5 descending ding-dong on pending tool approval
+- **Input** — A4 → C♯5 → E5 rising arpeggio when Claude asks a follow-up
+- **Done** — C5 → E5 → G5 rising major triad on turn completion
+
+Each cue fires only on state transition (not on every poll), throttled
+per-session. Right-click → **Sound Cues** to toggle.
+
+### Glass aesthetic, fully tunable
+
+Translucent warm-white panel with rounded corners, subtle top-edge
+highlight, soft drop shadow. Right-click anywhere on the widget for the
+full menu: Strategy / Mode / **Opacity** (60-100 % presets + custom
+slider) / Sound Cues / Help / Manage Trust / Quit. **Drag any edge or
+corner** to resize; size persists across restarts.
+
+### Strategy × Mode
+
+Right-click menu shows the live selection. Three **strategies**
+(`assist` = widget is the permission UI — default; `observer` = never
+override Claude; `auto` = headless rules + optional Gemini) and four
+**modes** setting how lenient auto-allow is (`strict` / `relaxed` /
+`trusted` / `yolo`).
+
+### Safety net
+
+Catastrophic Bash commands (`rm -rf /`, `git push --force`,
+`drop table`, `mkfs`…) are always hard-denied at the hook, even in
+YOLO mode.
+
+### Optional Gemini Flash classifier
+
+Set `GEMINI_API_KEY` in `.env` and flip `security.gemini_enabled` in
+`config.json`: risky auto-allowed tool calls get a ~300 ms "does this
+serve the stated task?" sanity check and are downgraded to a prompt
+if they don't.
 
 ## Requirements
 
@@ -150,49 +216,69 @@ Your other settings.json hooks are untouched.
 ## Configuration
 
 Everything lives in `config.json` at the project root. Defaults are
-safe. Relevant knobs:
+safe. Relevant knobs (valid JSON, comments here are for docs only):
 
-```jsonc
+```json
 {
-  "decision_strategy": "assist",      // assist | observer | auto
-  "mode": "relaxed",                  // strict | relaxed | trusted | yolo
+  "decision_strategy": "assist",
+  "mode": "relaxed",
   "security": {
     "gemini_enabled": false,
     "gemini_timeout_s": 4.0,
     "safety_net_block_catastrophic": true
   },
   "widget": {
-    "width": 220, "height": 160,
-    "corner": "bottom-right", "margin": 16,
-    "halo_radius": 8,
-    "halo_color": "#ff5e5e",
-    "border_color": "#ff2e2e"
+    "width": 400,
+    "height": 210,
+    "corner": "bottom-right",
+    "margin": 16,
+    "opacity_pct": 95,
+    "sound_enabled": true
   }
 }
 ```
 
-Your approved "allow forever" categories live in `trust.json` (which
-this repo ships empty). Delete that file to reset.
+- `decision_strategy` — `assist` / `observer` / `auto`
+- `mode` — `strict` / `relaxed` / `trusted` / `yolo`
+- `widget.opacity_pct` — 20–100 (also settable via right-click → Opacity)
+- `widget.sound_enabled` — mute/unmute the chimes
+- Anything you change via the right-click menu is written back here
+
+Your approved "allow forever" categories live in `trust.json` (repo
+ships empty). Session-scoped approvals stay in RAM only. Delete
+`trust.json` to wipe persistent trust.
 
 ## Architecture
 
 ```
-claude  ──hook fires──>  bash curl  ──POST──>  FastAPI server  ──state──>  widget
-                                                     │
+claude  ──hook fires──>  bash curl  ──POST──>  FastAPI server  ──poll──>  widget
+                                                     │                    (every 500 ms)
                                                      └── optional: Gemini classifier
 ```
 
-- `server/server.py` — hook endpoints (`/pretooluse`, `/stop`, …), per-session
-  state, pending-request queue, terminal HWND resolution.
-- `server/classify.py` — tool-call → category classifier
-  (e.g. `Bash:git-read`, `Write:config`, `MCP:write:…`).
-- `server/security.py` — regex fast-path + optional Gemini sanity check.
-- `server/stats.py` — transcript JSONL parser; model + token + context math.
-- `server/trust.py` — persistent + session trust store with 4 modes.
-- `widget.py` — PySide6 widget, tab strip, meter, halo, approval popup,
-  trust settings dialog, system tray.
+- `server/server.py` — hook endpoints (`/sessionstart`, `/pretooluse`,
+  `/stop`, `/sessionend`, …), per-session state, pending-request queue
+  (`asyncio.Event` gate), terminal HWND resolution (process-tree walk +
+  title-match fallback), liveness sweep based on `claude.exe` PID.
+- `server/classify.py` — tool-call → category (`Bash:git-read`,
+  `Write:config`, `MCP:write:…`).
+- `server/security.py` — regex fast-path (prompt-injection patterns,
+  credential-path regexes, irreversible-command regexes) + optional
+  Gemini Flash classifier for "does this serve the stated task?".
+- `server/stats.py` — transcript JSONL parser; model auto-detect,
+  context/token math, first-user-prompt extraction for tab labels.
+  200 MB file-size guard against pathological transcripts.
+- `server/trust.py` — session + persistent trust store, 4 mode matrices.
+- `widget.py` — PySide6 widget: glass panel, tab strip, playlist menu,
+  context meter, pill state badge, custom-painted action circle with
+  per-state animations, approval popup, rename / export dialogs,
+  edge-resize, sound synthesis, tray menu, help dialog.
 - `installer/install_hooks.py` — reversibly injects hook entries into
-  `~/.claude/settings.json`.
+  `~/.claude/settings.json`, tagged with `cc-beeper-win` for clean
+  removal. Handles Git Bash cygwin-PID → Win32-PID bridging via
+  `/proc/$$/winpid` so `psutil` can walk the process tree.
+- `launcher.pyw` — idempotent server-and-widget launcher used by the
+  Desktop / Start Menu shortcuts.
 
 ## Security notes
 

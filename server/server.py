@@ -41,11 +41,10 @@ except ImportError:
     pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from toast import notify  # noqa: E402
 from classify import classify  # noqa: E402
 from trust import TrustStore, mode_decision  # noqa: E402
 from security import regex_flags, gemini_classify, GEMINI_CHECK_CATEGORIES  # noqa: E402
-from stats import parse_transcript, first_user_prompt, SessionStats  # noqa: E402
+from stats import parse_transcript, first_user_prompt  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config.json"

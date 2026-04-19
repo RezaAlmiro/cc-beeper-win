@@ -27,7 +27,6 @@ Examples:
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
 from typing import Any
 
 CONFIG_PATH_PATTERNS = [

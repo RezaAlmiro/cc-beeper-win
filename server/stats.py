@@ -189,9 +189,21 @@ def first_user_prompt(path: str | Path) -> str:
     return ""
 
 
+MAX_TRANSCRIPT_BYTES = 200 * 1024 * 1024   # 200 MB — transcripts this big mean something's wrong
+
+
 def parse_transcript(path: str | Path) -> SessionStats | None:
     p = Path(path)
     if not p.exists() or not p.is_file():
+        return None
+    # Guard against a hook payload handing us a pathologically large file —
+    # transcript_path comes from Claude's hook body, so a local attacker
+    # could in theory point us at a 10 GB file and block the event loop.
+    try:
+        if p.stat().st_size > MAX_TRANSCRIPT_BYTES:
+            log.warning("transcript %s too large (%d bytes) — skipping", p, p.stat().st_size)
+            return None
+    except OSError:
         return None
     stats = SessionStats()
     last_usage: dict[str, Any] | None = None
