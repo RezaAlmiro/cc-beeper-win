@@ -187,7 +187,90 @@ QLabel#hdr    { color: #F2F5FA; font-family: Consolas, monospace; font-size: 13p
 QLabel#sub    { color: #9FEED9; font-family: Consolas, monospace; font-size: 10px; padding: 0 4px 6px 4px; }
 QLabel#cat    { color: #FAC496; font-family: Consolas, monospace; font-size: 11px; }
 QLabel#empty  { color: #6b7280; font-family: Consolas, monospace; font-size: 10px; font-style: italic; padding: 4px; }
+QLabel#helpSection {
+    color: #F2F5FA; font-family: 'Segoe UI', sans-serif;
+    font-size: 12px; padding: 2px 6px;
+}
 """
+
+
+HELP_TEXT = """\
+<h2 style="color:#F2F5FA">CC-Beeper-Win — Help</h2>
+
+<p style="color:#9FEED9">
+The widget is a live tab strip, one tab per Claude Code session. Tabs
+change colour to tell you what's going on; click the tab to switch the
+view; click the sprite area to jump to that session's terminal (when
+idle) or open the approval popup (when Claude is waiting on you).
+</p>
+
+<h3 style="color:#F2F5FA">Tab colours</h3>
+<ul style="color:#F2F5FA; line-height:1.45">
+  <li><b style="color:#ff9a9a">RED (steady)</b> — Claude is working on your prompt.</li>
+  <li><b style="color:#ff4d4d">RED flashing</b> — Claude is asking permission for a tool call. Click the widget to Allow / Deny.</li>
+  <li><b style="color:#57d9a3">GREEN (steady)</b> — Turn finished, nothing else expected. Free to send the next prompt.</li>
+  <li><b style="color:#77e0a3">GREEN flashing</b> — Turn finished BUT Claude asked a follow-up question. Reply to continue.</li>
+</ul>
+
+<h3 style="color:#F2F5FA">Strategy</h3>
+<p style="color:#9FEED9">Who actually decides on tool permissions:</p>
+<ul style="color:#F2F5FA; line-height:1.45">
+  <li><b>Assist</b> (default) — Widget is the permission UI. When Claude needs approval, the tab flashes and the 4-way popup lets you pick Allow once / session / forever / Deny. Approved categories are remembered so you don't keep re-answering the same question.</li>
+  <li><b>Observer</b> — Widget only watches. Claude's own native permission prompt runs as normal in the terminal. No overrides. Use if you prefer CC's built-in allow-list UI.</li>
+  <li><b>Auto</b> — Headless rules + optional Gemini Flash check. No widget popup. Only useful if you want lights-out operation with the safety layer still on.</li>
+</ul>
+
+<h3 style="color:#F2F5FA">Mode</h3>
+<p style="color:#9FEED9">How lenient the auto-allow policy is — i.e. which
+tool categories fly through without asking.</p>
+<ul style="color:#F2F5FA; line-height:1.45">
+  <li><b>Strict</b> — Ask for everything except Read-type tools.</li>
+  <li><b>Relaxed</b> (default) — Read + search + git-read fly. Writes, installs, network, MCP writes ask.</li>
+  <li><b>Trusted</b> — Adds project Writes and local git operations to the auto-allow list.</li>
+  <li><b>YOLO</b> — Almost everything flies except: writes to config/credentials paths, and catastrophic destructive commands (rm -rf /, git push --force, etc.) which the Safety Net always blocks regardless of mode.</li>
+</ul>
+
+<h3 style="color:#F2F5FA">Manage trust…</h3>
+<p style="color:#9FEED9">View and remove any categories you've approved. Persistent approvals survive restarts; session approvals are forgotten when you quit the widget.</p>
+
+<h3 style="color:#F2F5FA">Shortcuts</h3>
+<ul style="color:#F2F5FA; line-height:1.45">
+  <li>Single-click sprite → focus that session's terminal window / approve pending</li>
+  <li>Drag sprite → reposition widget</li>
+  <li>Click tray icon → show/hide widget</li>
+  <li>Right-click tray icon → menu (you're here)</li>
+</ul>
+
+<p style="color:#6b7280; font-size:10px; padding-top:8px">
+Repo: <a href="https://github.com/RezaAlmiro/cc-beeper-win" style="color:#9FEED9">github.com/RezaAlmiro/cc-beeper-win</a>
+</p>
+"""
+
+
+class HelpDialog(QDialog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("CC-Beeper-Win — Help")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.setStyleSheet(BUTTON_CSS + SETTINGS_CSS)
+        self.resize(560, 620)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10); outer.setSpacing(6)
+        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.Shape.NoFrame)
+        inner = QWidget()
+        inner.setStyleSheet("background: rgba(16, 22, 32, 240); border: 1px solid #2a3348; border-radius: 4px;")
+        inner_layout = QVBoxLayout(inner); inner_layout.setContentsMargins(12, 10, 12, 10); inner_layout.setSpacing(0)
+        body = QLabel(HELP_TEXT)
+        body.setObjectName("helpSection")
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setWordWrap(True)
+        body.setOpenExternalLinks(True)
+        inner_layout.addWidget(body)
+        area.setWidget(inner)
+        outer.addWidget(area, stretch=1)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.hide)
+        outer.addWidget(close_btn)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +610,12 @@ class BeeperWidget(QMainWindow):
 
         self._popup = ApprovalPopup(self._resolve)
         self._settings = TrustSettings()
+        self._help = HelpDialog()
+        # Tray-menu selection state — must exist before _build_tray runs.
+        self._strategy_actions: dict[str, QAction] = {}
+        self._mode_actions: dict[str, QAction] = {}
+        self._current_strategy: str | None = None
+        self._current_mode: str | None = None
         self._tray = self._build_tray()
 
         self._timer = QTimer(self); self._timer.timeout.connect(self._tick); self._timer.start(POLL_MS)
@@ -565,6 +654,9 @@ class BeeperWidget(QMainWindow):
             data = r.json() if r.status_code == 200 else {}
         except requests.RequestException:
             data = {}
+        # Keep the tray menu's tick marks in sync with the server
+        self._sync_menu_selections(data.get("strategy"), data.get("mode"))
+
         sessions = data.get("sessions", [])
         snapshot = {s["session_id"]: s for s in sessions}
         self._sessions_snapshot = snapshot
@@ -865,27 +957,42 @@ class BeeperWidget(QMainWindow):
         icon_path = ASSETS / "snoozing.png"
         icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
         tray = QSystemTrayIcon(icon, self); tray.setToolTip("CC-Beeper-Win")
-        menu = QMenu()
+        self._tray_menu = QMenu()
+        menu = self._tray_menu
 
         show_act = QAction("Show / Hide widget", self); show_act.triggered.connect(self._toggle_visibility)
         menu.addAction(show_act)
         menu.addSeparator()
 
-        strat_menu = menu.addMenu("Strategy")
+        # Strategy submenu — items are checkable so the current selection
+        # shows a tick next to it.
+        self._strat_menu = menu.addMenu("Strategy:  …")
         for label, value in (
-            ("Assist (widget decides) [default]", "assist"),
-            ("Observer (never override Claude)", "observer"),
-            ("Auto (headless rules + Gemini)", "auto"),
+            ("Assist  (widget decides)  [default]", "assist"),
+            ("Observer  (never override Claude)",   "observer"),
+            ("Auto  (headless rules + Gemini)",     "auto"),
         ):
-            a = QAction(label, self); a.triggered.connect(lambda _=False, v=value: self._set_strategy(v))
-            strat_menu.addAction(a)
+            a = QAction(label, self)
+            a.setCheckable(True)
+            a.triggered.connect(lambda _=False, v=value: self._set_strategy(v))
+            self._strat_menu.addAction(a)
+            self._strategy_actions[value] = a
 
-        mode_menu = menu.addMenu("Mode")
-        for m in ("strict", "relaxed", "trusted", "yolo"):
-            a = QAction(m.upper(), self); a.triggered.connect(lambda _=False, mode=m: self._set_mode(mode))
-            mode_menu.addAction(a)
+        self._mode_menu = menu.addMenu("Mode:  …")
+        for m, descr in (
+            ("strict",  "ask for everything except reads"),
+            ("relaxed", "reads + git-read fly; writes + network ask  [default]"),
+            ("trusted", "+ project writes and local git operations"),
+            ("yolo",    "auto-allow almost everything (safety net still on)"),
+        ):
+            a = QAction(f"{m.upper()}  —  {descr}", self)
+            a.setCheckable(True)
+            a.triggered.connect(lambda _=False, mode=m: self._set_mode(mode))
+            self._mode_menu.addAction(a)
+            self._mode_actions[m] = a
 
         menu.addSeparator()
+        h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
         s = QAction("Manage trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
         c = QAction("Clear session trust", self); c.triggered.connect(self._clear_session_trust); menu.addAction(c)
 
@@ -896,6 +1003,23 @@ class BeeperWidget(QMainWindow):
         tray.activated.connect(lambda reason: self._toggle_visibility() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
         tray.show()
         return tray
+
+    def _sync_menu_selections(self, strategy: str | None, mode: str | None) -> None:
+        """Reflect the server-side current strategy/mode in the tray menu
+        (tick marks + submenu titles). Called on every poll."""
+        if strategy and strategy != self._current_strategy:
+            for v, act in self._strategy_actions.items():
+                act.setChecked(v == strategy)
+            self._strat_menu.setTitle(f"Strategy:  {strategy}")
+            self._current_strategy = strategy
+        if mode and mode != self._current_mode:
+            for v, act in self._mode_actions.items():
+                act.setChecked(v == mode)
+            self._mode_menu.setTitle(f"Mode:  {mode}")
+            self._current_mode = mode
+
+    def _show_help(self) -> None:
+        self._help.show(); self._help.raise_(); self._help.activateWindow()
 
     def _toggle_visibility(self) -> None:
         (self.hide if self.isVisible() else self.show)()
