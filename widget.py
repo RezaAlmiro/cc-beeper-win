@@ -251,6 +251,81 @@ class GlassPanel(QWidget):
 # The big circular state button — custom-painted so we can animate per state
 # ==========================================================================
 
+class TickerLine(QWidget):
+    """News-ticker-style horizontally scrolling label. Displays a single
+    string; if it's wider than the widget, it crawls leftward, wrapping
+    seamlessly. Stationary (no animation) when the text already fits."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedHeight(20)
+        self._text = ""
+        self._scroll_x = 0.0
+        self._speed = 1.3       # pixels per tick
+        self._timer = QTimer(self)
+        self._timer.setInterval(35)   # ~28 fps
+        self._timer.timeout.connect(self._tick)
+
+    def setText(self, text: str) -> None:
+        text = (text or "").strip()
+        if text == self._text:
+            return
+        self._text = text
+        self._scroll_x = 0.0
+        self._configure_timer()
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._configure_timer()
+
+    def _configure_timer(self):
+        if not self._text:
+            self._timer.stop()
+            return
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self._ticker_string())
+        if text_w <= self.width():
+            self._timer.stop()
+            self._scroll_x = 0.0
+        else:
+            if not self._timer.isActive():
+                self._timer.start()
+
+    def _ticker_string(self) -> str:
+        # Separator between repeats so the scroll never shows a flush-join.
+        return self._text + "    ·    "
+
+    def _tick(self):
+        self._scroll_x -= self._speed
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self._ticker_string())
+        if self._scroll_x <= -text_w:
+            self._scroll_x += text_w
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._text:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        font = QFont("Segoe UI"); font.setPointSize(9); font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        y = (self.height() + fm.ascent() - fm.descent()) // 2
+        text = self._ticker_string()
+        text_w = fm.horizontalAdvance(text)
+        p.setPen(QColor("#1F2430"))
+        if text_w <= self.width():
+            p.drawText(0, y, self._text)
+            return
+        # Scroll mode — draw two copies side-by-side so wrap-around is seamless
+        x = int(self._scroll_x)
+        p.drawText(x, y, text)
+        p.drawText(x + text_w, y, text)
+
+
 class ActionCircle(QWidget):
     """Circular state button. Each mode has its own colour and animation:
 
@@ -631,6 +706,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Title</b> — The Session's Name. Starts As Your First Prompt And You Can Rename It Anytime (Button Or Right-Click). Right-Clicking The Title Also Reveals A Per-Session Slash-Command Menu.</li>
   <li><b>Subtitle</b> — Project Folder  ·  Model (E.g. "Cc-Beeper-Win  ·  Opus 4.7 (1M)").</li>
   <li><b>State Badge (Top-Right)</b> — A Coloured Pill Spelling The Live State ("Working", "Done", "Input", "Approve", "Error", "Idle"). Background Colour Matches The Action Circle So Everything Visually Agrees.</li>
+  <li><b>Ticker Line (Between Title And Context Bar)</b> — A News-Ticker-Style Crawler That Shows What Claude Is Currently Doing: The Active Tool Call While Working, Plus A Rolling History Of Recent Tools. Stationary If The Text Fits; Scrolls Leftward When It's Longer Than The Widget Is Wide. When Waiting, Shows The Pending Tool's Summary; When Idle, A Quiet Placeholder.</li>
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
@@ -947,6 +1023,12 @@ class BeeperWidget(QMainWindow):
         self._set_state_badge("snoozing")
         top.addWidget(self.state_badge, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(top)
+
+        # News-ticker line between title and context bar — scrolls Claude's
+        # current work (current tool + recent tool history when working;
+        # status prose otherwise).
+        self.ticker = TickerLine()
+        root.addWidget(self.ticker)
 
         # Middle: context bar + time-style labels
         mid = QHBoxLayout(); mid.setSpacing(8)
@@ -1392,6 +1474,7 @@ class BeeperWidget(QMainWindow):
         self._set_state_badge("snoozing")
         self.ctx_bar.setValue(0); self.lbl_ctx_used.setText(""); self.lbl_ctx_left.setText("")
         self.lbl_meta.setText("Open A Claude Code Session And Its Tab Will Appear Here")
+        self.ticker.setText("")
         self.btn_action.set_state("idle", "I", "Idle — No Active Sessions")
         pm = self._load_pixmap("snoozing.png")
         if not pm.isNull():
@@ -1412,6 +1495,33 @@ class BeeperWidget(QMainWindow):
         pending = s.get("pending") or []
         has_pending = bool(pending)
         self._set_state_badge(state, has_pending=has_pending)
+
+        # Ticker content — current tool + rolling recent history when
+        # actively working, or plain status prose otherwise.
+        recent = s.get("recent_tools") or []
+        if has_pending:
+            p = pending[0]
+            ticker_text = f"⏸ Awaiting Approval: {p.get('tool','?')} — {p.get('summary','')[:140]}"
+        elif state == "awaiting_input":
+            msg = (s.get("message") or "Claude Asked You A Follow-Up")[:140]
+            ticker_text = f"💬 Claude Is Asking: {msg}"
+        elif state == "working":
+            pieces: list[str] = []
+            if s.get("tool"):
+                cat = s.get("category") or ""
+                pieces.append(f"⚙ Running {s['tool']}" + (f" ({cat})" if cat else ""))
+            for t in recent[-6:]:
+                if t:
+                    pieces.append(t)
+            ticker_text = "   ·   ".join(pieces) if pieces else "⚙ Working…"
+        elif state == "done":
+            tail = " · ".join(recent[-3:]) if recent else ""
+            ticker_text = "✓ Turn Finished" + (f" — last: {tail}" if tail else "")
+        elif state == "error":
+            ticker_text = f"✗ {(s.get('message') or 'Last turn failed')[:180]}"
+        else:
+            ticker_text = "⏳ Idle — Waiting For Your First Prompt"
+        self.ticker.setText(ticker_text)
 
         # Action circle — letter + state; the ActionCircle class drives
         # its own animation based on mode.

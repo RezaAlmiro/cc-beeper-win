@@ -510,6 +510,7 @@ async def sessions_endpoint() -> dict[str, Any]:
             "custom_name": s.get("custom_name", ""),
             "cc_claude_pid": s.get("cc_claude_pid"),
             "cc_shell_pid": s.get("cc_shell_pid"),
+            "recent_tools": s.get("recent_tools", []),
             "state": s.get("state", "snoozing"),
             "tool": s.get("tool"),
             "category": s.get("category"),
@@ -814,6 +815,16 @@ async def pretooluse(request: Request) -> JSONResponse:
     # render the "done, but awaiting your reply" state instead of plain done.
     if tool_name == "AskUserQuestion":
         SESSIONS.setdefault(session_id, {})["awaiting_input"] = True
+
+    # Keep a rolling list of recent tool calls so the widget's ticker
+    # line can scroll "Reading foo.py → Editing bar.py → Bash git status".
+    sess = SESSIONS.get(session_id)
+    if sess is not None:
+        recent = sess.setdefault("recent_tools", [])
+        summary = _summarize(tool_name, tool_input)
+        blurb = f"{tool_name}: {summary}" if summary else tool_name
+        recent.append(blurb[:140])
+        sess["recent_tools"] = recent[-8:]  # keep last 8
 
     _set_state(
         session_id,
