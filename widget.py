@@ -35,9 +35,9 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QScrollArea, QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget,
     QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar,
 )
 
@@ -599,7 +599,21 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>/model</b> — Switch Model Mid-Session (E.g. Drop From Opus To Sonnet For Cheaper Runs).</li>
   <li><b>/resume</b> — Pick Up An Earlier Session Instead Of Starting Over.</li>
 </ul>
-<p style="color:#60667A">The Widget Refuses To Send A Slash Command While The State Dot Is Red — The Keystrokes Would Be Mixed Into Claude's Live Input Stream. Wait For Green.</p>
+<p style="color:#60667A">The Widget Refuses To Send A Slash Command While The State Is Red — The Keystrokes Would Be Mixed Into Claude's Live Input Stream. Wait For Green.</p>
+
+<h3 style="color:#1F2430">Export Session Stats</h3>
+<p style="color:#60667A">At The Bottom Of The Commands Dropdown (Or In The Title Right-Click Menu), <b>Export Session Stats To Txt…</b> Saves A Plain-Text Report For The Currently Selected Tab. The Report Includes:</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li>Session Identity (Name, ID, CWD, First Prompt)</li>
+  <li>Model + Context Window Size</li>
+  <li>Current Context Usage + Remaining</li>
+  <li>Lifetime Token Totals (Input / Output / Cache-Read / Cache-Write / Turns)</li>
+  <li>Derived Economics — Cache-Hit Rate, Output/Input Ratio, Turns-Per-Percent</li>
+  <li>Insights Generated From Your Actual Usage (E.g. "Cache Is Doing Heavy Lifting", "Long-Running Session: 423 Turns")</li>
+  <li>Tips Tailored To The Session: When To /compact, Whether Your Cache Is Warm, Whether To Drop To A Cheaper Model</li>
+  <li>Current CC-Beeper Settings + Your Trust List</li>
+</ul>
+<p style="color:#60667A">Saves Anywhere You Like Via A File Dialog. Default Filename Includes The Session Label + Timestamp.</p>
 
 <h3 style="color:#1F2430">Token-Saving Tips (Without Hurting Output)</h3>
 <ul style="color:#1F2430; line-height:1.6">
@@ -855,6 +869,10 @@ class BeeperWidget(QMainWindow):
             a = QAction(label, self)
             a.triggered.connect(lambda _=False, c=cmd: self._send_cmd(c))
             slash_menu.addAction(a)
+        slash_menu.addSeparator()
+        export_act = QAction("📄  Export Session Stats To Txt…", self)
+        export_act.triggered.connect(self._export_session_stats)
+        slash_menu.addAction(export_act)
         self.btn_slash.setMenu(slash_menu)
 
         self.btn_rename.clicked.connect(self._rename_active)
@@ -1241,7 +1259,7 @@ class BeeperWidget(QMainWindow):
         s = self._active_session()
         if not s: return
         menu = QMenu(self)
-        cmd_menu = menu.addMenu("Send slash command")
+        cmd_menu = menu.addMenu("Send Slash Command")
         for label, cmd in (
             ("/compact",  "/compact"),
             ("/clear",    "/clear"),
@@ -1252,8 +1270,193 @@ class BeeperWidget(QMainWindow):
             a = QAction(label, self); a.triggered.connect(lambda _=False, c=cmd: self._send_cmd(c))
             cmd_menu.addAction(a)
         menu.addSeparator()
+        ex = QAction("📄  Export Session Stats To Txt…", self)
+        ex.triggered.connect(self._export_session_stats)
+        menu.addAction(ex)
+        menu.addSeparator()
         r = QAction("Rename…", self); r.triggered.connect(self._rename_active); menu.addAction(r)
         menu.exec_(self.lbl_title.mapToGlobal(pos))
+
+    # --- session stats export -------------------------------------------
+
+    def _build_session_report(self, s: dict) -> str:
+        """Plain-text session report with token / context numbers + auto
+        generated insights and tips keyed to the actual usage."""
+        import datetime
+        stats = s.get("stats") or {}
+
+        model_label = stats.get("model_label") or "?"
+        limit = int(stats.get("context_limit") or 0)
+        current = int(stats.get("current_context") or 0)
+        pct = float(stats.get("context_pct") or 0)
+        total_in = int(stats.get("total_input") or 0)
+        total_out = int(stats.get("total_output") or 0)
+        cache_r = int(stats.get("total_cache_read") or 0)
+        cache_w = int(stats.get("total_cache_write") or 0)
+        turns = int(stats.get("turns") or 0)
+
+        # Derived economics
+        total_served_in = total_in + cache_r + cache_w
+        cache_hit_pct = (100.0 * cache_r / total_served_in) if total_served_in else 0.0
+        out_in_ratio = (total_out / total_in) if total_in else 0.0
+        turns_per_pct = (turns / pct) if pct > 0 else 0.0
+
+        # Try to get trust info (fresh snapshot; don't rely on cached)
+        trust = {"persistent": [], "session": []}
+        try:
+            trust = requests.get(server_url("/trust"), timeout=1.5).json() or trust
+        except Exception:
+            pass
+
+        lines = []
+        lines.append("CC-BEEPER-WIN — SESSION STATS EXPORT")
+        lines.append("=" * 60)
+        lines.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+
+        lines.append("SESSION")
+        lines.append("-" * 60)
+        lines.append(f"  Display Name : {session_label(s)}")
+        lines.append(f"  Session ID   : {s.get('session_id','')}")
+        lines.append(f"  CWD          : {s.get('cwd','')}")
+        lines.append(f"  State        : {s.get('state','?')}")
+        lines.append(f"  First Prompt : {(s.get('first_task') or '')[:300]}")
+        if s.get("custom_name"):
+            lines.append(f"  Custom Name  : {s['custom_name']}")
+        lines.append("")
+
+        lines.append("MODEL")
+        lines.append("-" * 60)
+        lines.append(f"  Model        : {model_label}")
+        lines.append(f"  Raw ID       : {stats.get('model_raw','?')}")
+        lines.append(f"  Context Limit: {limit:>12,} tokens")
+        lines.append("")
+
+        lines.append("CONTEXT USAGE")
+        lines.append("-" * 60)
+        lines.append(f"  Current      : {current:>12,}  ({pct:.1f}%)")
+        lines.append(f"  Remaining    : {max(0, limit - current):>12,}  ({max(0.0, 100 - pct):.1f}%)")
+        lines.append("")
+
+        lines.append("TOKENS (LIFETIME)")
+        lines.append("-" * 60)
+        lines.append(f"  Turns        : {turns:>12,}")
+        lines.append(f"  Input (fresh): {total_in:>12,}")
+        lines.append(f"  Output       : {total_out:>12,}")
+        lines.append(f"  Cache Read   : {cache_r:>12,}   (≈ 10% the cost of a fresh input token)")
+        lines.append(f"  Cache Write  : {cache_w:>12,}")
+        lines.append("")
+
+        lines.append("ECONOMICS")
+        lines.append("-" * 60)
+        if total_served_in:
+            lines.append(f"  Cache Hit Rate      : {cache_hit_pct:.1f}%  ({fmt_tokens(cache_r)} / {fmt_tokens(total_served_in)})")
+        if total_in:
+            lines.append(f"  Output / Input      : {out_in_ratio:.1f}×  ({fmt_tokens(total_out)} out per {fmt_tokens(total_in)} fresh in)")
+        if turns and pct > 0:
+            lines.append(f"  Turns Per 1% Context: {turns_per_pct:.1f}")
+        lines.append("")
+
+        # ---------- insights ----------
+        lines.append("INSIGHTS")
+        lines.append("-" * 60)
+        if cache_hit_pct >= 90:
+            lines.append("  • Cache is doing heavy lifting (≥90% of input served from cache).")
+            lines.append("    Your prompt caching is working — keep reusing the same files.")
+        elif cache_hit_pct >= 70:
+            lines.append("  • Cache hit rate is healthy. Nothing to fix.")
+        elif total_served_in > 0:
+            lines.append("  • Cache hit rate is low — you're paying full freight on most input.")
+            lines.append("    Likely cause: you're reading many different files or churning paths.")
+
+        if pct >= 85:
+            lines.append("  • Context is near the ceiling. /compact NOW or you'll start dropping info.")
+        elif pct >= 60:
+            lines.append("  • Context is in the \"getting full\" zone. /compact soon is a good move.")
+        elif pct >= 30:
+            lines.append("  • Context usage is comfortable. No rush.")
+        else:
+            lines.append("  • Plenty of room in the context window.")
+
+        if out_in_ratio >= 500:
+            lines.append("  • Output-heavy session (lots of generation).")
+        elif out_in_ratio >= 50:
+            lines.append("  • Balanced read/generate mix.")
+        elif total_in > 0:
+            lines.append("  • Read-heavy session (lots of exploration, less generation).")
+
+        if turns >= 300:
+            lines.append(f"  • Long-running session: {turns} turns.")
+        lines.append("")
+
+        # ---------- tips ----------
+        lines.append("TIPS FOR IMPROVING TOKEN EFFICIENCY")
+        lines.append("-" * 60)
+        tip_n = 1
+        def tip(txt: str):
+            nonlocal tip_n
+            lines.append(f"  {tip_n}. {txt}")
+            tip_n += 1
+
+        if pct >= 60:
+            tip("Hit /compact soon. Summarising around 60-80% loses less than waiting to 95%.")
+        else:
+            tip("Watch the context bar. Target /compact around 60% for the best trade-off.")
+
+        if cache_hit_pct < 70 and total_served_in > 0:
+            tip("Stick to a stable set of files per task — re-opening the same paths warms the cache, swapping paths cold-loads them again.")
+        else:
+            tip("Huge cache totals in the meta line are fine; cache reads cost ≈10% of fresh reads.")
+
+        tip("Use /clear between unrelated tasks so task-A context doesn't bloat task-B.")
+
+        if "opus" in (model_label or "").lower():
+            tip("For routine edits (renames, small refactors), /model to Sonnet can be ~5× cheaper. Promote back to Opus for hard reasoning.")
+
+        tip("Batch related prompts in one turn instead of many tiny turns — each turn pays a system-prompt overhead.")
+        tip("Avoid pasting long logs into prompts — file paths + Read tool calls cache, pasted text doesn't.")
+        lines.append("")
+
+        lines.append("CC-BEEPER-WIN SETTINGS")
+        lines.append("-" * 60)
+        lines.append(f"  Strategy : {self._current_strategy or '?'}")
+        lines.append(f"  Mode     : {self._current_mode or '?'}")
+        lines.append(f"  Trust (persistent): {', '.join(trust.get('persistent') or []) or '(none)'}")
+        lines.append(f"  Trust (session)   : {', '.join(trust.get('session') or []) or '(none)'}")
+        lines.append("")
+
+        lines.append("=" * 60)
+        lines.append("github.com/RezaAlmiro/cc-beeper-win")
+        return "\n".join(lines)
+
+    def _export_session_stats(self) -> None:
+        s = self._active_session()
+        if not s:
+            QMessageBox.warning(self, "No Session", "There's no active session to export.")
+            return
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe_name = "".join(c if c.isalnum() or c in " -_" else "_"
+                            for c in session_label(s))[:40].strip().replace(" ", "-")
+        default_name = f"cc-beeper-{safe_name or s['session_id'][:8]}-{ts}.txt"
+        default_dir = str(Path.home() / "Documents")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Session Stats",
+            str(Path(default_dir) / default_name),
+            "Text files (*.txt);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            report = self._build_session_report(s)
+            Path(path).write_text(report, encoding="utf-8")
+            self._tray.showMessage(
+                "CC-Beeper-Win",
+                f"Exported to\n{Path(path).name}",
+                QSystemTrayIcon.MessageIcon.Information, 2800,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Export Failed", f"Couldn't write file:\n{e}")
 
     def _resolve(self, decision: str, scope: str):
         s = self._active_session()
