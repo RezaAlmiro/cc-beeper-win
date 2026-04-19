@@ -136,6 +136,67 @@ def _clean_prompt(text: str) -> str:
     return cleaned[:200]
 
 
+def latest_assistant_narrative(path: str | Path, *, max_chars: int = 400) -> str:
+    """Return the most recent prose text Claude has produced in this
+    session (last text block from the latest assistant message). This is
+    what the UI uses to show Claude's in-flight 'thinking' — the prose
+    between tool calls that Ctrl+O surfaces in the terminal."""
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return ""
+    try:
+        if p.stat().st_size > MAX_TRANSCRIPT_BYTES:
+            return ""
+    except OSError:
+        return ""
+
+    # Walk the file; cheapest reliable approach is to read all lines.
+    # Transcripts for an active turn are typically <5 MB.
+    latest_text = ""
+    try:
+        with p.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                role = (
+                    rec.get("role")
+                    or (rec.get("message") or {}).get("role")
+                    or ""
+                )
+                if role != "assistant":
+                    continue
+                msg = rec.get("message") or rec
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if isinstance(content, str):
+                    latest_text = content
+                elif isinstance(content, list):
+                    parts: list[str] = []
+                    for blk in content:
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            t = str(blk.get("text") or "").strip()
+                            if t:
+                                parts.append(t)
+                        elif isinstance(blk, dict) and blk.get("type") == "thinking":
+                            # Use the thinking summary if no visible text
+                            t = str(blk.get("thinking") or "").strip()
+                            if t and not parts:
+                                parts.append(t)
+                    if parts:
+                        latest_text = " ".join(parts)
+    except Exception:
+        return ""
+
+    latest_text = " ".join(latest_text.split())  # collapse whitespace
+    return latest_text[:max_chars]
+
+
 def first_user_prompt(path: str | Path) -> str:
     """Return the first user message text from a transcript JSONL, or "".
     Skips command wrappers / tool results / system reminders and returns

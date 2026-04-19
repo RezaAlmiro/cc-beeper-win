@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from classify import classify  # noqa: E402
 from trust import TrustStore, mode_decision  # noqa: E402
 from security import regex_flags, gemini_classify, GEMINI_CHECK_CATEGORIES  # noqa: E402
-from stats import parse_transcript, first_user_prompt  # noqa: E402
+from stats import parse_transcript, first_user_prompt, latest_assistant_narrative  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config.json"
@@ -502,6 +502,15 @@ async def sessions_endpoint() -> dict[str, Any]:
             first_task = first_user_prompt(s["transcript_path"])
             if first_task:
                 s["first_task"] = first_task
+        # Pull Claude's in-flight narrative text from the transcript so
+        # the widget ticker can surface "thinking" between tool calls.
+        narrative = ""
+        if s.get("transcript_path"):
+            try:
+                narrative = latest_assistant_narrative(s["transcript_path"], max_chars=350)
+            except Exception:
+                narrative = ""
+
         out.append({
             "session_id": sid,
             "cwd": s.get("cwd", ""),
@@ -511,6 +520,9 @@ async def sessions_endpoint() -> dict[str, Any]:
             "cc_claude_pid": s.get("cc_claude_pid"),
             "cc_shell_pid": s.get("cc_shell_pid"),
             "recent_tools": s.get("recent_tools", []),
+            "current_turn_steps": s.get("current_turn_steps", []),
+            "narrative": narrative,
+            "turn_start_ts": s.get("turn_start_ts"),
             "state": s.get("state", "snoozing"),
             "tool": s.get("tool"),
             "category": s.get("category"),
@@ -737,8 +749,11 @@ async def user_prompt_submit(request: Request) -> JSONResponse:
         if not s.get("first_task"):
             from stats import _clean_prompt  # local import to avoid cycle
             s["first_task"] = _clean_prompt(prompt)
-    # New prompt arriving clears any "awaiting user reply" flag.
+    # New prompt arriving clears any "awaiting user reply" flag AND resets
+    # the per-turn step tracker — we're about to start a new turn.
     s["awaiting_input"] = False
+    s["current_turn_steps"] = []
+    s["turn_start_ts"] = _now()
     _set_state(session_id, "working", message=prompt[:120])
     log.info("UserPromptSubmit session=%s prompt_len=%d", session_id[:8], len(prompt))
     return JSONResponse({})
@@ -825,6 +840,19 @@ async def pretooluse(request: Request) -> JSONResponse:
         blurb = f"{tool_name}: {summary}" if summary else tool_name
         recent.append(blurb[:140])
         sess["recent_tools"] = recent[-8:]  # keep last 8
+
+        # Per-turn step tracker — reset on UserPromptSubmit, appended on
+        # each PreToolUse, mark-done on PostToolUse. Used by the widget
+        # ticker to render "Step 3 ⏳ Editing widget.py" style progress.
+        steps = sess.setdefault("current_turn_steps", [])
+        steps.append({
+            "tool": tool_name,
+            "summary": summary[:140],
+            "status": "running",
+            "started_at": _now(),
+            "finished_at": None,
+        })
+        sess["current_turn_steps"] = steps[-50:]   # cap for very long turns
 
     _set_state(
         session_id,
@@ -932,6 +960,15 @@ async def posttooluse(request: Request) -> JSONResponse:
     tool_name = body.get("tool_name") or "?"
     tool_input = body.get("tool_input") or {}
     category = classify(tool_name, tool_input)
+    # Mark the most recent running step as done (for the ticker).
+    sess = SESSIONS.get(session_id)
+    if sess is not None:
+        steps = sess.get("current_turn_steps") or []
+        for step in reversed(steps):
+            if step.get("status") == "running" and step.get("tool") == tool_name:
+                step["status"] = "done"
+                step["finished_at"] = _now()
+                break
     # AskUserQuestion completed means the user has already answered → no
     # longer awaiting input.
     if tool_name == "AskUserQuestion":

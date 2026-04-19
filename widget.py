@@ -706,7 +706,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Title</b> — The Session's Name. Starts As Your First Prompt And You Can Rename It Anytime (Button Or Right-Click). Right-Clicking The Title Also Reveals A Per-Session Slash-Command Menu.</li>
   <li><b>Subtitle</b> — Project Folder  ·  Model (E.g. "Cc-Beeper-Win  ·  Opus 4.7 (1M)").</li>
   <li><b>State Badge (Top-Right)</b> — A Coloured Pill Spelling The Live State ("Working", "Done", "Input", "Approve", "Error", "Idle"). Background Colour Matches The Action Circle So Everything Visually Agrees.</li>
-  <li><b>Ticker Line (Between Title And Context Bar)</b> — A News-Ticker-Style Crawler That Shows What Claude Is Currently Doing: The Active Tool Call While Working, Plus A Rolling History Of Recent Tools. Stationary If The Text Fits; Scrolls Leftward When It's Longer Than The Widget Is Wide. When Waiting, Shows The Pending Tool's Summary; When Idle, A Quiet Placeholder.</li>
+  <li><b>Ticker Line (Between Title And Context Bar)</b> — A News-Ticker-Style Crawler Showing Claude's Turn-By-Turn Progress. While Working It Renders A Numbered Step List — "Step 1 ✓ Read Widget.py  ·  Step 2 ✓ Grep TODO  ·  Step 3 ⏳ Editing Widget.py" — With ✓ For Completed Steps And ⏳ For The One In Flight. When Claude Has Written Any Prose Between Tool Calls (The "Thinking" Text You'd See With Ctrl+O), It's Appended In Quotes So You Can Read His Running Commentary. Scrolls Leftward When Longer Than The Widget Is Wide; Stationary If It Fits. Pending Approval → "⏸ Awaiting Approval: …". Input Needed → "💬 Claude Is Asking: …". Done → "✓ Turn Finished — 7 Steps — Last: Edit, Bash, Read". Idle → Quiet Placeholder.</li>
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
@@ -1496,31 +1496,11 @@ class BeeperWidget(QMainWindow):
         has_pending = bool(pending)
         self._set_state_badge(state, has_pending=has_pending)
 
-        # Ticker content — current tool + rolling recent history when
-        # actively working, or plain status prose otherwise.
-        recent = s.get("recent_tools") or []
-        if has_pending:
-            p = pending[0]
-            ticker_text = f"⏸ Awaiting Approval: {p.get('tool','?')} — {p.get('summary','')[:140]}"
-        elif state == "awaiting_input":
-            msg = (s.get("message") or "Claude Asked You A Follow-Up")[:140]
-            ticker_text = f"💬 Claude Is Asking: {msg}"
-        elif state == "working":
-            pieces: list[str] = []
-            if s.get("tool"):
-                cat = s.get("category") or ""
-                pieces.append(f"⚙ Running {s['tool']}" + (f" ({cat})" if cat else ""))
-            for t in recent[-6:]:
-                if t:
-                    pieces.append(t)
-            ticker_text = "   ·   ".join(pieces) if pieces else "⚙ Working…"
-        elif state == "done":
-            tail = " · ".join(recent[-3:]) if recent else ""
-            ticker_text = "✓ Turn Finished" + (f" — last: {tail}" if tail else "")
-        elif state == "error":
-            ticker_text = f"✗ {(s.get('message') or 'Last turn failed')[:180]}"
-        else:
-            ticker_text = "⏳ Idle — Waiting For Your First Prompt"
+        # Ticker content — assembles a running narrative of the turn:
+        # numbered step list with ✓ for done / ⏳ for in-flight, plus
+        # Claude's latest prose (pulled from the transcript). When there's
+        # nothing running we fall back to quiet status prose.
+        ticker_text = self._build_ticker_text(s, state, has_pending, pending)
         self.ticker.setText(ticker_text)
 
         # Action circle — letter + state; the ActionCircle class drives
@@ -1580,6 +1560,63 @@ class BeeperWidget(QMainWindow):
             self._popup.hide()
 
     # -- actions ----------------------------------------------------------
+
+    def _build_ticker_text(self, s: dict[str, Any], state: str,
+                           has_pending: bool, pending: list) -> str:
+        """Compose a step-by-step narrative of the current turn. Shape:
+
+            Step 1 ✓ Read widget.py  ·  Step 2 ✓ Grep TODO  ·
+            Step 3 ⏳ Editing widget.py  ·  "Let me refactor the helper…"
+
+        Falls back to quiet status prose for non-working states."""
+        if has_pending:
+            p = pending[0]
+            return f"⏸ Awaiting Approval: {p.get('tool','?')} — {p.get('summary','')[:160]}"
+        if state == "awaiting_input":
+            msg = (s.get("message") or "Claude Asked You A Follow-Up")[:200]
+            return f"💬 Claude Is Asking: {msg}"
+        if state == "error":
+            return f"✗ {(s.get('message') or 'Last turn failed')[:220]}"
+
+        steps = s.get("current_turn_steps") or []
+        narrative = (s.get("narrative") or "").strip()
+
+        if state == "working":
+            if not steps and not narrative:
+                return "⚙ Claude Is Thinking…"
+            pieces: list[str] = []
+            total = len(steps)
+            # Up to the last 6 steps so the line doesn't balloon
+            tail_count = min(6, total)
+            start_idx = total - tail_count
+            for i, step in enumerate(steps[-tail_count:], start=start_idx + 1):
+                mark = "✓" if step.get("status") == "done" else "⏳"
+                tool = step.get("tool") or "?"
+                summary = step.get("summary") or ""
+                label = f"Step {i} {mark} {tool}"
+                if summary:
+                    label += f": {summary[:70]}"
+                pieces.append(label)
+            if narrative:
+                # Quote Claude's latest prose so it's obvious it's his voice
+                pieces.append(f"\u201C{narrative[:200]}\u201D")
+            return "   ·   ".join(pieces)
+
+        if state == "done":
+            if steps:
+                total = len(steps)
+                done_tools = [st.get("tool") for st in steps if st.get("status") == "done"]
+                last3 = " · ".join(t for t in done_tools[-3:] if t)
+                base = f"✓ Turn Finished — {total} Step{'s' if total != 1 else ''}"
+                if last3:
+                    base += f" — last: {last3}"
+                if narrative:
+                    base += f"   ·   \u201C{narrative[:180]}\u201D"
+                return base
+            return "✓ Turn Finished — Ready For Next Prompt"
+
+        # idle / snoozing
+        return "⏳ Idle — Waiting For Your First Prompt"
 
     def _cycle_session(self, delta: int):
         if not self._sessions:
