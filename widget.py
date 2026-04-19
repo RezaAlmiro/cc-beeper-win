@@ -1105,6 +1105,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Top Projects</b> — All-Time Token Leaderboard Across Your Project Folders.</li>
   <li><b>Open Anthropic Usage Page</b> Button (Top-Right) — One-Click Launch Of <b>claude.ai/settings/usage</b> For Anthropic's Authoritative Plan-Enforced Percentages. Those Live Behind An Authenticated Session We Can't Read Locally.</li>
 </ul>
+<p style="color:#60667A">A <b>Colour Legend</b> At The Top Of The Dialog Decodes Every Hue You'll See: Regular Bar (Blue), Highlight (Orange Peak / Today / Busiest), Excellent / Healthy (Green), Caution (Amber), Low (Red), Output-Heavy (Blue Badge), Read-Heavy / Marathon (Purple). <b>Rating Badges</b> Follow Cache Hit Rate, Output/Input Ratio, And Session Duration With A Clear Visual Tag. <b>The Dialog Reloads On Every Open</b> — No Stale Numbers — And The <b>Reload</b> Button In The Bottom Row Forces A Manual Re-Scan. Server Caches Parsed Transcripts By Mtime So The Re-Scan Is Near-Instant.</p>
 
 <h3 style="color:#1F2430">Sound Cues</h3>
 <p style="color:#60667A">Three Soft Melodic Chimes, Each For A Different State Transition:</p>
@@ -1333,6 +1334,9 @@ class UsageDialog(QDialog):
         insights = data.get("insights") or {}
         fam_week = data.get("by_family_week") or {}
 
+        # ---- Legend (explains the colour coding used throughout) ----
+        self._inner_layout.addWidget(self._legend_bar())
+
         # ---- Summary strip (the "how much did I use" numbers) ----
         self._inner_layout.addWidget(self._section_header("Summary"))
         sess = windows.get("last_5h") or {}
@@ -1419,24 +1423,39 @@ class UsageDialog(QDialog):
         # ---- Efficiency ----
         self._inner_layout.addWidget(self._section_header("Efficiency"))
         cache_pct = insights.get("cache_hit_pct", 0)
-        cache_tag = ("excellent" if cache_pct >= 90 else
-                     "healthy" if cache_pct >= 70 else
-                     "low — check file churn" if cache_pct < 50 else "okay")
+        if cache_pct >= 90:
+            cache_badge = self._badge("excellent", "#4CD98D", "#062615")
+        elif cache_pct >= 70:
+            cache_badge = self._badge("healthy",   "#7CE0A8", "#062615")
+        elif cache_pct >= 50:
+            cache_badge = self._badge("okay",      "#FFB74D", "#2a1d00")
+        else:
+            cache_badge = self._badge("low — check file churn", "#FF7A7A", "#330707")
         self._inner_layout.addWidget(self._insight(
-            f"🧠  Cache Hit Rate: <b>{cache_pct:.1f}%</b> ({cache_tag})"
+            f"🧠  Cache Hit Rate: <b>{cache_pct:.1f}%</b> &nbsp; {cache_badge}"
         ))
         oi = insights.get("output_input_ratio", 0)
-        oi_tag = ("output-heavy (generation)" if oi >= 100 else
-                  "balanced" if oi >= 10 else "read-heavy (exploration)")
+        if oi >= 100:
+            oi_badge = self._badge("output-heavy · generation", "#3DA1FF", "#001830")
+        elif oi >= 10:
+            oi_badge = self._badge("balanced",                   "#7CE0A8", "#062615")
+        else:
+            oi_badge = self._badge("read-heavy · exploration",   "#C084FC", "#1B0733")
         self._inner_layout.addWidget(self._insight(
-            f"📝  Output / Input Ratio: <b>{oi:,.1f}×</b> ({oi_tag})"
+            f"📝  Output / Input Ratio: <b>{oi:,.1f}×</b> &nbsp; {oi_badge}"
         ))
         avg_s = insights.get("avg_session_minutes", 0)
         med_s = insights.get("median_session_minutes", 0)
         if avg_s:
+            if avg_s < 15:
+                dur_badge = self._badge("bursty",       "#FFB74D", "#2a1d00")
+            elif avg_s > 120:
+                dur_badge = self._badge("marathon",     "#C084FC", "#1B0733")
+            else:
+                dur_badge = self._badge("steady",       "#7CE0A8", "#062615")
             self._inner_layout.addWidget(self._insight(
                 f"⏳  Session Duration: median <b>{med_s:.0f} min</b>, "
-                f"average <b>{avg_s:.0f} min</b>"
+                f"average <b>{avg_s:.0f} min</b> &nbsp; {dur_badge}"
             ))
 
         # ---- Model mix this week ----
@@ -1509,6 +1528,45 @@ class UsageDialog(QDialog):
         lbl = QLabel(html); lbl.setObjectName("u_insight")
         lbl.setTextFormat(Qt.TextFormat.RichText); lbl.setWordWrap(True)
         return lbl
+
+    def _badge(self, text: str, bg: str, fg: str) -> str:
+        """Inline coloured pill for a rating tag. Returned as HTML so the
+        caller can embed it inside a RichText _insight line."""
+        return (
+            f'<span style="background:{bg}; color:{fg}; padding:2px 8px; '
+            f'border-radius:8px; font-size:10px; font-weight:800; '
+            f'letter-spacing:0.4px">{text.upper()}</span>'
+        )
+
+    def _legend_bar(self) -> QWidget:
+        """A single compact row at the top of the dialog that decodes
+        every colour the user will see below — so they don't have to
+        guess what "orange bar" or "blue badge" means."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 2, 0, 10); lay.setSpacing(14)
+        items = [
+            ("#487CFF", "Regular bar"),
+            ("#FFB74D", "Highlight: peak / busiest / today"),
+            ("#4CD98D", "Excellent / healthy"),
+            ("#FFB74D", "Caution / bursty"),
+            ("#FF7A7A", "Low / needs attention"),
+            ("#3DA1FF", "Output-heavy"),
+            ("#C084FC", "Read-heavy / marathon"),
+        ]
+        for color, label in items:
+            cell = QWidget()
+            clay = QHBoxLayout(cell); clay.setContentsMargins(0, 0, 0, 0); clay.setSpacing(6)
+            swatch = QLabel("  ")
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet(
+                f"background: {color}; border: 1px solid rgba(255,255,255,40); border-radius: 3px;"
+            )
+            text = QLabel(label); text.setObjectName("u_muted")
+            clay.addWidget(swatch); clay.addWidget(text)
+            lay.addWidget(cell)
+        lay.addStretch(1)
+        return row
 
     def _mono(self, text: str) -> QLabel:
         lbl = QLabel(text); lbl.setObjectName("u_mono")
