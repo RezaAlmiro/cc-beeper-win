@@ -1,0 +1,26 @@
+{
+  "decision_strategy": "assist",
+  "mode": "trusted",
+  "toast_on": [],
+  "trusted_categories_file": "trust.json",
+  "port_range": [
+    19222,
+    19230
+  ],
+  "security": {
+    "gemini_enabled": false,
+    "gemini_timeout_s": 4.0,
+    "auto_learn_from_posttooluse": false,
+    "safety_net_block_catastrophic": true
+  },
+  "widget": {
+    "width": 220,
+    "height": 160,
+    "corner": "bottom-right",
+    "margin": 16,
+    "opacity": 0.97,
+    "halo_radius": 8,
+    "halo_color": "#ff5e5e",
+    "border_color": "#ff2e2e"
+  }
+}

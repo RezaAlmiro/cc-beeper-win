@@ -1,0 +1,37 @@
+# Runtime artifacts
+.port
+server.log
+server_stdout.log
+*.log
+
+# Per-user trust state (regenerated on first run)
+trust.json
+
+# Claude Code settings.json backups created by the installer
+*.ccbeeper.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local secrets (nothing in the repo reads these, but belt + braces)
+.env
+.env.local
+secrets.json
+credentials.json

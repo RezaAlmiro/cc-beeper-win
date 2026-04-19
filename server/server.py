@@ -1,0 +1,728 @@
+"""CC-Beeper-Win local hook server.
+
+Listens on 127.0.0.1:19222-19230 for Claude Code hook HTTP POSTs.
+
+v2c features:
+  * Per-session state (one tab per session in the widget)
+  * Transcript parsing: model auto-detect, context-window %, token totals
+  * Category classifier + regex + Gemini security layer
+  * Persistent + session trust
+  * Blocking PreToolUse gate with widget-side 4-way approval ladder
+  * Terminal HWND resolved at hook time for click-through focus
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import socket
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+# Optional .env loading for the (optional) Gemini classifier key.
+# Looks in the project root first, then its parent directory. Missing file
+# is fine — Gemini is disabled by default.
+try:
+    from dotenv import load_dotenv
+    _project_root = Path(__file__).resolve().parents[1]
+    for candidate in (_project_root / ".env", _project_root.parent / ".env"):
+        if candidate.exists():
+            load_dotenv(candidate)
+            break
+except ImportError:
+    pass
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from toast import notify  # noqa: E402
+from classify import classify  # noqa: E402
+from trust import TrustStore, mode_decision  # noqa: E402
+from security import regex_flags, gemini_classify, GEMINI_CHECK_CATEGORIES  # noqa: E402
+from stats import parse_transcript, first_user_prompt, SessionStats  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT / "config.json"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.FileHandler(ROOT / "server.log", encoding="utf-8"), logging.StreamHandler()],
+)
+log = logging.getLogger("cc-beeper.server")
+
+
+def load_config() -> dict[str, Any]:
+    with CONFIG_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def find_free_port(start: int, end: int) -> int:
+    for port in range(start, end + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f"no free port in range {start}-{end}")
+
+
+app = FastAPI(title="CC-Beeper-Win")
+CFG = load_config()
+TRUST = TrustStore(ROOT / CFG.get("trusted_categories_file", "trust.json"))
+
+# Pending user-decisions, awaited by the blocked PreToolUse handler.
+PENDING: dict[str, dict[str, Any]] = {}
+PENDING_LOCK = asyncio.Lock()
+PENDING_TIMEOUT_S = 300
+
+# Session-keyed state. Each session has:
+#   - task, cwd, transcript_path, model, stats, ts, stopped_at
+#   - state: snoozing|working|done|error|allow|input|listening
+#   - tool, category, message, expires_at
+#   - cc_shell_pid, cc_ppid, terminal_hwnd
+# A session can have AT MOST ONE pending request at a time (stored in PENDING).
+SESSIONS: dict[str, dict[str, Any]] = {}
+
+# Transcript stats cache: session_id -> {stats_dict, mtime, fetched_at}
+STATS_CACHE: dict[str, dict[str, Any]] = {}
+STATS_MIN_REFRESH_S = 1.5
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _session(session_id: str) -> dict[str, Any]:
+    return SESSIONS.setdefault(session_id, {
+        "state": "snoozing",
+        "tool": None,
+        "category": None,
+        "message": None,
+        "expires_at": 0.0,
+        "ts": _now(),
+    })
+
+
+def _set_state(session_id: str, state: str, *, tool: str | None = None,
+               category: str | None = None, message: str | None = None,
+               ttl_s: float = 0.0) -> None:
+    s = _session(session_id)
+    s["state"] = state
+    s["tool"] = tool
+    s["category"] = category
+    s["message"] = message
+    s["expires_at"] = _now() + ttl_s if ttl_s > 0 else 0.0
+    s["ts"] = _now()
+
+
+async def safe_json(request: Request) -> dict[str, Any]:
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"_raw": text[:500]}
+
+
+# ---------------------------------------------------------------------------
+# Terminal HWND resolution
+# ---------------------------------------------------------------------------
+
+# Process-name priority for picking which ancestor hosts the visible UI.
+# Lower number = higher priority. True terminal emulators with their own
+# visible top-level window come first; shells/console-hosts come last as
+# fallback (their "windows" are often zero-size pseudo-console helpers).
+TERMINAL_PROC_PRIORITY: dict[str, int] = {
+    "WindowsTerminal.exe": 0,
+    "wt.exe":              0,
+    "WezTerm.exe":         0,
+    "wezterm-gui.exe":     0,
+    "alacritty.exe":       0,
+    "mintty.exe":          0,
+    "Hyper.exe":           0,
+    "ConEmu64.exe":        1,
+    "ConEmuC64.exe":       1,
+    "Cmder.exe":           1,
+    "powershell.exe":      3,
+    "pwsh.exe":            3,
+    "cmd.exe":             3,
+    "bash.exe":            3,
+    "git-bash.exe":        3,
+    "conhost.exe":         5,
+    "OpenConsole.exe":     5,
+}
+
+# Window classes we always reject (hidden console helpers).
+HIDDEN_WINDOW_CLASSES = {
+    "PseudoConsoleWindow",
+    "ConsoleWindowClass",  # traditional cmd/pwsh console
+}
+
+# Window classes that belong to a real terminal emulator UI. When we see
+# one of these we accept the window even if Windows has cloaked it offscreen
+# (rect at -25600,-25600 happens when a WT window is minimised).
+TERMINAL_UI_CLASSES = {
+    "CASCADIA_HOSTING_WINDOW_CLASS",   # Windows Terminal
+    "org.wezfurlong.wezterm",          # WezTerm
+    "Alacritty",                        # Alacritty
+    "mintty",                           # mintty / Git Bash
+    "ConEmuMainClass",                  # ConEmu
+    "Hyper",                            # Hyper
+}
+
+
+def _terminal_hwnd_for_pid(pid: int | None) -> int | None:
+    if not pid:
+        return None
+    try:
+        import psutil  # type: ignore
+        import win32gui  # type: ignore
+        import win32process  # type: ignore
+    except Exception:
+        return None
+    try:
+        p = psutil.Process(pid)
+    except Exception:
+        return None
+
+    # Walk ancestors collecting (priority, pid) for every terminal-ish proc.
+    candidates: list[tuple[int, int]] = []
+    for ancestor in [p] + list(p.parents()):
+        try:
+            name = ancestor.name()
+        except Exception:
+            continue
+        pr = TERMINAL_PROC_PRIORITY.get(name)
+        if pr is not None:
+            candidates.append((pr, ancestor.pid))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+
+    # Enumerate real top-level windows for each candidate PID, in priority
+    # order. Pick the first that looks like a legitimate visible terminal.
+    for _, tpid in candidates:
+        hits: list[int] = []
+
+        def enum(hwnd: int, _: Any) -> None:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            try:
+                _, wpid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                return
+            if wpid != tpid:
+                return
+            try:
+                cls = win32gui.GetClassName(hwnd) or ""
+            except Exception:
+                cls = ""
+            if cls in HIDDEN_WINDOW_CLASSES:
+                return
+            # Known terminal-UI classes: accept unconditionally. Windows can
+            # cloak a minimised WT window to (-25600, -25600) with a tiny
+            # rect, and it's still the correct HWND to SetForegroundWindow.
+            if cls in TERMINAL_UI_CLASSES:
+                hits.append(hwnd)
+                return
+            # Everything else: require a realistic size and reject tool
+            # windows / owned popups.
+            try:
+                l, t, r, b = win32gui.GetWindowRect(hwnd)
+            except Exception:
+                return
+            if (r - l) < 80 or (b - t) < 40:
+                return
+            try:
+                import win32con  # type: ignore
+                ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                if ex_style & win32con.WS_EX_TOOLWINDOW:
+                    return
+            except Exception:
+                pass
+            hits.append(hwnd)
+
+        try:
+            win32gui.EnumWindows(enum, None)
+        except Exception:
+            continue
+        if hits:
+            return hits[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Stats helpers
+# ---------------------------------------------------------------------------
+
+def _session_stats(session_id: str) -> dict[str, Any]:
+    s = SESSIONS.get(session_id) or {}
+    tp = s.get("transcript_path")
+    if not tp:
+        return {}
+    try:
+        mtime = os.path.getmtime(tp)
+    except OSError:
+        return {}
+    cache = STATS_CACHE.get(session_id)
+    now = _now()
+    if cache and cache.get("mtime") == mtime and (now - cache.get("fetched_at", 0)) < STATS_MIN_REFRESH_S:
+        return cache["stats"]
+    stats = parse_transcript(tp)
+    if stats is None:
+        return cache.get("stats", {}) if cache else {}
+    d = stats.to_dict()
+    STATS_CACHE[session_id] = {"stats": d, "mtime": mtime, "fetched_at": now}
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "mode": CFG.get("mode"),
+        "strategy": CFG.get("decision_strategy"),
+        "sessions": len(SESSIONS),
+        "trust": TRUST.list_all(),
+    }
+
+
+@app.get("/sessions")
+async def sessions_endpoint() -> dict[str, Any]:
+    now = _now()
+    out: list[dict[str, Any]] = []
+    for sid, s in SESSIONS.items():
+        # auto-revert transient states
+        if s.get("expires_at") and now > s["expires_at"]:
+            # Don't kill snoozing-revert if still pending
+            has_pending = any(p["session_id"] == sid for p in PENDING.values())
+            if not has_pending:
+                s["state"] = "snoozing"
+                s["expires_at"] = 0.0
+        pending_here = [
+            {
+                "id": rid,
+                "tool": p["tool"],
+                "category": p["category"],
+                "summary": p["summary"],
+                "reason": p.get("reason", ""),
+                "age_s": round(now - p["created_at"], 1),
+            }
+            for rid, p in PENDING.items() if p.get("session_id") == sid
+        ]
+        first_task = s.get("first_task") or ""
+        if not first_task and s.get("transcript_path"):
+            # Session started before our hook captured the prompt — pull it
+            # from the transcript so tabs get a real label immediately.
+            first_task = first_user_prompt(s["transcript_path"])
+            if first_task:
+                s["first_task"] = first_task
+        out.append({
+            "session_id": sid,
+            "cwd": s.get("cwd", ""),
+            "task": (s.get("task") or "")[:200],
+            "first_task": first_task,
+            "state": s.get("state", "snoozing"),
+            "tool": s.get("tool"),
+            "category": s.get("category"),
+            "message": s.get("message"),
+            "ts": s.get("ts"),
+            "stopped_at": s.get("stopped_at"),
+            "terminal_hwnd": s.get("terminal_hwnd"),
+            "pending": pending_here,
+            "stats": _session_stats(sid),
+        })
+    out.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    return {
+        "mode": CFG.get("mode"),
+        "strategy": CFG.get("decision_strategy"),
+        "sessions": out,
+    }
+
+
+@app.post("/resolve")
+async def resolve(request: Request) -> dict[str, Any]:
+    body = await safe_json(request)
+    rid = body.get("request_id", "")
+    decision = body.get("decision", "").lower()
+    scope = body.get("scope", "once").lower()
+    if rid not in PENDING:
+        return {"ok": False, "error": "unknown request_id"}
+    if decision not in {"allow", "deny"}:
+        return {"ok": False, "error": "decision must be allow|deny"}
+    entry = PENDING[rid]
+    category = entry["category"]
+    if decision == "allow":
+        if scope == "session":
+            TRUST.add_session(category)
+        elif scope == "persistent":
+            TRUST.add_persistent(category)
+    entry["decision"] = decision
+    entry["scope"] = scope
+    entry["event"].set()
+    log.info("resolve %s+%s cat=%s", decision, scope, category)
+    return {"ok": True, "category": category, "scope": scope}
+
+
+@app.post("/mode")
+async def set_mode(request: Request) -> dict[str, Any]:
+    body = await safe_json(request)
+    new_mode = body.get("mode", "").strip().lower()
+    if new_mode not in {"strict", "relaxed", "trusted", "yolo"}:
+        return {"ok": False, "error": f"unknown mode {new_mode!r}"}
+    CFG["mode"] = new_mode
+    CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
+    log.info("mode switched to %s", new_mode)
+    return {"ok": True, "mode": new_mode}
+
+
+@app.post("/strategy")
+async def set_strategy(request: Request) -> dict[str, Any]:
+    body = await safe_json(request)
+    new_strat = body.get("strategy", "").strip().lower()
+    if new_strat not in {"observer", "assist", "auto"}:
+        return {"ok": False, "error": f"unknown strategy {new_strat!r}"}
+    CFG["decision_strategy"] = new_strat
+    CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
+    log.info("strategy switched to %s", new_strat)
+    return {"ok": True, "strategy": new_strat}
+
+
+@app.get("/trust")
+async def trust_list() -> dict[str, Any]:
+    return TRUST.list_all()
+
+
+@app.post("/trust/add")
+async def trust_add(request: Request) -> dict[str, Any]:
+    body = await safe_json(request)
+    category = body.get("category", "")
+    scope = body.get("scope", "session")
+    if not category:
+        return {"ok": False, "error": "missing category"}
+    if scope == "persistent":
+        TRUST.add_persistent(category)
+    else:
+        TRUST.add_session(category)
+    return {"ok": True, "trust": TRUST.list_all()}
+
+
+@app.post("/trust/remove")
+async def trust_remove(request: Request) -> dict[str, Any]:
+    body = await safe_json(request)
+    category = body.get("category", "")
+    TRUST.remove(category)
+    return {"ok": True, "trust": TRUST.list_all()}
+
+
+# ---------------------------------------------------------------------------
+# Hook event handlers
+# ---------------------------------------------------------------------------
+
+def _apply_hook_metadata(session_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Extract cwd, transcript_path, and PIDs from hook body + headers,
+    resolve the terminal HWND (once per session)."""
+    s = _session(session_id)
+    s["ts"] = _now()
+
+    cwd_val = str(body.get("cwd") or s.get("cwd", ""))
+    if cwd_val:
+        s["cwd"] = cwd_val
+    tp = body.get("transcript_path")
+    if tp:
+        s["transcript_path"] = str(tp)
+
+    # Parent PIDs from hook headers (WINPID conversion already done)
+    shell_hdr = request.headers.get("x-cc-shell-pid") or request.headers.get("X-CC-SHELL-PID")
+    ppid_hdr = request.headers.get("x-cc-ppid") or request.headers.get("X-CC-PPID")
+    shell_pid = int(shell_hdr) if shell_hdr and shell_hdr.isdigit() else None
+    ppid = int(ppid_hdr) if ppid_hdr and ppid_hdr.isdigit() else None
+    if shell_pid:
+        s["cc_shell_pid"] = shell_pid
+    if ppid:
+        s["cc_ppid"] = ppid
+
+    # Only resolve HWND if we don't have one yet — terminals rarely move.
+    if not s.get("terminal_hwnd"):
+        hwnd = _terminal_hwnd_for_pid(shell_pid) or _terminal_hwnd_for_pid(ppid)
+        if hwnd:
+            s["terminal_hwnd"] = hwnd
+    return s
+
+
+@app.post("/userpromptsubmit")
+async def user_prompt_submit(request: Request) -> JSONResponse:
+    body = await safe_json(request)
+    session_id = str(body.get("session_id", "unknown"))
+    s = _apply_hook_metadata(session_id, body, request)
+    prompt = str(body.get("prompt") or body.get("message") or "")
+    if prompt:
+        s["task"] = prompt[:2000]
+        # Keep the very first prompt as the session's stable display name.
+        if not s.get("first_task"):
+            from stats import _clean_prompt  # local import to avoid cycle
+            s["first_task"] = _clean_prompt(prompt)
+    _set_state(session_id, "working", message=prompt[:120])
+    log.info("UserPromptSubmit session=%s prompt_len=%d", session_id[:8], len(prompt))
+    return JSONResponse({})
+
+
+def _summarize(tool: str, tool_input: dict[str, Any]) -> str:
+    if tool == "Bash":
+        return str(tool_input.get("command") or "")[:220]
+    if tool in {"Write", "Edit", "NotebookEdit"}:
+        return str(tool_input.get('file_path') or tool_input.get('notebook_path') or "")[:220]
+    if tool == "Read":
+        return str(tool_input.get("file_path") or "")[:220]
+    if tool in {"Grep", "Glob"}:
+        return str(tool_input.get("pattern") or tool_input.get("query") or "")[:220]
+    try:
+        return json.dumps(tool_input, ensure_ascii=False)[:220]
+    except Exception:
+        return str(tool_input)[:220]
+
+
+async def _await_user_decision(
+    session_id: str, tool_name: str, tool_input: dict[str, Any],
+    category: str, reason: str,
+) -> tuple[str, str]:
+    request_id = str(uuid.uuid4())
+    event = asyncio.Event()
+    entry = {
+        "tool": tool_name,
+        "tool_input": tool_input,
+        "category": category,
+        "session_id": session_id,
+        "summary": _summarize(tool_name, tool_input),
+        "reason": reason,
+        "created_at": _now(),
+        "event": event,
+        "decision": None,
+        "scope": None,
+    }
+    async with PENDING_LOCK:
+        PENDING[request_id] = entry
+    _set_state(session_id, "allow", tool=tool_name, category=category,
+               message=reason, ttl_s=PENDING_TIMEOUT_S)
+    try:
+        await asyncio.wait_for(event.wait(), timeout=PENDING_TIMEOUT_S)
+        return entry["decision"] or "ask", entry["scope"] or "once"
+    except asyncio.TimeoutError:
+        return "ask", "timeout"
+    finally:
+        async with PENDING_LOCK:
+            PENDING.pop(request_id, None)
+        still_pending = any(p.get("session_id") == session_id for p in PENDING.values())
+        if not still_pending:
+            _set_state(session_id, "working")
+
+
+@app.post("/pretooluse")
+async def pretooluse(request: Request) -> JSONResponse:
+    body = await safe_json(request)
+    tool_name = body.get("tool_name") or "?"
+    tool_input = body.get("tool_input") or {}
+    session_id = str(body.get("session_id") or "unknown")
+
+    _apply_hook_metadata(session_id, body, request)
+
+    category = classify(tool_name, tool_input)
+    flags = regex_flags(tool_name, tool_input)
+    strategy = CFG.get("decision_strategy", "assist")
+    sec_cfg = CFG.get("security", {})
+    mode = CFG.get("mode", "relaxed")
+
+    _set_state(
+        session_id,
+        "working" if not flags else "allow",
+        tool=tool_name, category=category,
+        message=("; ".join(flags) if flags else None),
+        ttl_s=30.0 if flags else 0.0,
+    )
+    log.info("PreToolUse session=%s tool=%s cat=%s flags=%s strategy=%s",
+             session_id[:8], tool_name, category, flags or "-", strategy)
+
+    if (
+        tool_name == "Bash"
+        and sec_cfg.get("safety_net_block_catastrophic", True)
+        and "irreversible destructive command" in flags
+    ):
+        joined = "; ".join(flags)
+        log.warning("safety-net BLOCK tool=%s reason=%s", tool_name, joined)
+        _set_state(session_id, "error", tool=tool_name, category=category,
+                   message=joined, ttl_s=10.0)
+        return JSONResponse({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"cc-beeper-win safety net: {joined}",
+        }})
+
+    if strategy == "observer":
+        return JSONResponse({})
+
+    if not flags and TRUST.is_trusted(category):
+        return JSONResponse({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "cc-beeper: trusted category",
+        }})
+
+    base_decision = mode_decision(mode, category)
+    gemini_reason = ""
+    if (
+        base_decision == "allow"
+        and not flags
+        and sec_cfg.get("gemini_enabled", False)
+        and category in GEMINI_CHECK_CATEGORIES
+    ):
+        task = (SESSIONS.get(session_id) or {}).get("task", "")
+        verdict, why = gemini_classify(
+            task, tool_name, tool_input,
+            timeout=float(sec_cfg.get("gemini_timeout_s", 4.0)),
+        )
+        if verdict == "block":
+            return JSONResponse({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": f"cc-beeper Gemini blocked: {why}",
+            }})
+        if verdict == "warn":
+            base_decision = "ask"
+            gemini_reason = why
+
+    if base_decision == "allow" and not flags:
+        return JSONResponse({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": f"cc-beeper: mode={mode}",
+        }})
+
+    if strategy == "auto":
+        return JSONResponse({})
+
+    reason_bits: list[str] = []
+    if flags:
+        reason_bits.append("; ".join(flags))
+    if gemini_reason:
+        reason_bits.append(gemini_reason)
+    if not reason_bits:
+        reason_bits.append(f"mode={mode} requires approval for {category}")
+    reason = " | ".join(reason_bits)
+
+    decision, scope = await _await_user_decision(
+        session_id, tool_name, tool_input, category, reason,
+    )
+    log.info("user decision session=%s cat=%s -> %s (%s)", session_id[:8], category, decision, scope)
+
+    if decision == "allow":
+        return JSONResponse({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": f"user approved via widget ({scope})",
+        }})
+    if decision == "deny":
+        return JSONResponse({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "user denied via widget",
+        }})
+    return JSONResponse({})
+
+
+@app.post("/posttooluse")
+async def posttooluse(request: Request) -> JSONResponse:
+    body = await safe_json(request)
+    session_id = str(body.get("session_id") or "unknown")
+    _apply_hook_metadata(session_id, body, request)
+    tool_name = body.get("tool_name") or "?"
+    tool_input = body.get("tool_input") or {}
+    category = classify(tool_name, tool_input)
+    if CFG.get("security", {}).get("auto_learn_from_posttooluse"):
+        if not TRUST.is_trusted(category):
+            TRUST.add_session(category)
+    return JSONResponse({})
+
+
+@app.post("/notification")
+async def notification(request: Request) -> JSONResponse:
+    body = await safe_json(request)
+    session_id = str(body.get("session_id") or "unknown")
+    _apply_hook_metadata(session_id, body, request)
+    ntype = str(body.get("notification_type") or "").lower()
+    msg = str(body.get("message") or ntype or "Needs your attention")
+    log.info("Notification session=%s type=%s: %s", session_id[:8], ntype or "?", msg[:80])
+
+    # Claude Code fires Notification in several cases:
+    #   permission_prompt  — real "approve this tool" prompt → flash
+    #   elicitation_dialog — mid-turn question to user → flash
+    #   idle_prompt        — CC is idle waiting for next user prompt → NOT flashing
+    #   auth_success       — benign auth event → NOT flashing
+    # Avoid treating idle_prompt as attention; that's what was making the
+    # widget flash after a session visibly finished.
+    IDLE_TYPES = {"idle_prompt", "auth_success"}
+    if ntype in IDLE_TYPES:
+        # Session is idle waiting for user input. Stay snoozing rather than
+        # grabbing attention.
+        cur = (SESSIONS.get(session_id) or {}).get("state")
+        if cur != "done":
+            _set_state(session_id, "snoozing", message=msg[:120])
+        return JSONResponse({})
+
+    _set_state(session_id, "input", message=msg[:120], ttl_s=45.0)
+    return JSONResponse({})
+
+
+@app.post("/stop")
+async def stop(request: Request) -> JSONResponse:
+    body = await safe_json(request)
+    session_id = str(body.get("session_id") or "unknown")
+    s = _apply_hook_metadata(session_id, body, request)
+    s["stopped_at"] = _now()
+    log.info("Stop session=%s", session_id[:8])
+    # Stay DONE until the next UserPromptSubmit. The tab turns green so the
+    # user can tell at a glance which sessions are waiting on them.
+    _set_state(session_id, "done", message="Turn finished — ready for next prompt")
+    return JSONResponse({})
+
+
+@app.post("/stopfailure")
+async def stop_failure(request: Request) -> JSONResponse:
+    body = await safe_json(request)
+    session_id = str(body.get("session_id") or "unknown")
+    _apply_hook_metadata(session_id, body, request)
+    log.info("StopFailure session=%s: %s", session_id[:8], body.get("error", ""))
+    _set_state(session_id, "error", message=str(body.get("error", "Unknown"))[:120], ttl_s=10.0)
+    return JSONResponse({})
+
+
+def main() -> None:
+    start, end = CFG.get("port_range", [19222, 19230])
+    port = find_free_port(start, end)
+    (ROOT / ".port").write_text(str(port), encoding="utf-8")
+    log.info(
+        "cc-beeper-win listening on 127.0.0.1:%d (mode=%s, strategy=%s, trust=%d)",
+        port, CFG.get("mode"), CFG.get("decision_strategy"),
+        len(TRUST.list_all()["persistent"]),
+    )
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+
+
+if __name__ == "__main__":
+    main()
