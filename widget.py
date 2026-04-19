@@ -21,9 +21,10 @@ import requests
 from PySide6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect, QSize
 from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPainter, QPixmap, QRadialGradient, QColor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu,
-    QPushButton, QScrollArea, QSizeGrip, QSizePolicy, QSystemTrayIcon,
-    QVBoxLayout, QWidget, QGraphicsOpacityEffect, QProgressBar,
+    QApplication, QDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QMainWindow, QMenu, QPushButton, QScrollArea, QSizeGrip,
+    QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QGraphicsOpacityEffect, QProgressBar,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -135,45 +136,39 @@ QLabel#reason  { color: #FFBDBD; font-family: Consolas, monospace; font-size: 10
 
 TAB_CSS = """
 QWidget#tabbar { background: rgba(8, 12, 20, 245); padding: 0; }
-/* Notebook-folder style: rounded top only, slight negative right-margin
-   so adjacent tabs overlap a little. */
+/* Notebook-folder style: rounded top corners, square bottom, no overlap
+   (the overlap was clipping label text and making tabs unreadable). */
 QPushButton.sessionTab {
     background: rgba(170, 40, 40, 230);
     color: #ffeaea;
-    border: 1px solid rgba(255, 255, 255, 40);
+    border: 1px solid rgba(255, 255, 255, 55);
     border-bottom: none;
     border-top-left-radius: 9px;
     border-top-right-radius: 9px;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
-    font-family: Consolas, 'Courier New', monospace;
-    font-size: 11px; font-weight: 700;
-    padding: 6px 10px 10px 10px;
-    margin-right: -6px;
+    font-family: 'Segoe UI', Consolas, sans-serif;
+    font-size: 13px; font-weight: 700;
+    padding: 4px 8px 8px 8px;
     text-align: center;
 }
-/* Turn finished, nothing else expected — steady green. */
 QPushButton.sessionTab[tabstate="done"] {
     background: rgba(40, 140, 70, 240);
     color: #e9fff0;
 }
-/* Turn finished but Claude asked a follow-up — green. */
 QPushButton.sessionTab[tabstate="awaiting"] {
     background: rgba(60, 200, 110, 245);
     color: #062615;
 }
-/* Active tab: thicker white top border, sits visually on top. */
 QPushButton.sessionTab[active="true"] {
     border: 2px solid #ffffff;
     border-bottom: none;
-    padding: 6px 10px 12px 10px;
+    padding: 4px 8px 10px 8px;
 }
-/* Pending approval — flashing bright red (overrides colour). */
 QPushButton.sessionTab[flashing="true"][flash_color="red"] {
     background: rgba(255, 94, 94, 245);
     color: #0B1020;
 }
-/* Awaiting user reply — flashing bright green. */
 QPushButton.sessionTab[flashing="true"][flash_color="green"] {
     background: rgba(95, 230, 140, 245);
     color: #062615;
@@ -496,21 +491,35 @@ class TrustSettings(QDialog):
 # ---------------------------------------------------------------------------
 
 class SessionTab(QPushButton):
-    def __init__(self, session_id: str, parent=None) -> None:
+    def __init__(self, session_id: str, rename_cb=None, parent=None) -> None:
         super().__init__(parent)
         self.session_id = session_id
+        self._rename_cb = rename_cb
         self.setProperty("class", "sessionTab")
         self.setProperty("active", False)
         self.setProperty("flashing", False)
         self.setProperty("tabstate", "working")
         self.setProperty("flash_color", "red")
-        self.setMinimumHeight(18)
-        self.setMaximumHeight(22)
+        self.setMinimumHeight(28)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
         self._flash_anim: QPropertyAnimation | None = None
         self._fx = QGraphicsOpacityEffect(self)
         self._fx.setOpacity(1.0)
         self.setGraphicsEffect(self._fx)
+
+    def _on_context_menu(self, pos) -> None:
+        if not self._rename_cb:
+            return
+        menu = QMenu(self)
+        rename = QAction("Rename tab…", self)
+        rename.triggered.connect(lambda: self._rename_cb(self.session_id))
+        menu.addAction(rename)
+        clear = QAction("Clear custom name", self)
+        clear.triggered.connect(lambda: self._rename_cb(self.session_id, ""))
+        menu.addAction(clear)
+        menu.exec_(self.mapToGlobal(pos))
 
     def _repolish(self) -> None:
         self.style().unpolish(self); self.style().polish(self)
@@ -574,8 +583,7 @@ class BeeperWidget(QMainWindow):
         self.tabbar = QWidget(container); self.tabbar.setObjectName("tabbar")
         self.tabbar.setFixedHeight(34)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        self.tabbar_layout.setContentsMargins(6, 2, 6, 0); self.tabbar_layout.setSpacing(0)
-        # Tabs use margin-right: -6px for notebook-folder overlap; equal stretch.
+        self.tabbar_layout.setContentsMargins(6, 2, 6, 0); self.tabbar_layout.setSpacing(2)
         root.addWidget(self.tabbar)
 
         # --- sprite ---
@@ -745,24 +753,31 @@ class BeeperWidget(QMainWindow):
                 if self._active_session == sid:
                     self._active_session = None
         # Add/update tabs
+        from PySide6.QtGui import QFontMetrics  # local import
+        n = max(1, len(sessions))
+        # Compute the width each tab will actually get after spacing/margins
+        avail_w = max(60, self.tabbar.width() - 12 - (n - 1) * 2)
+        per_tab_w = avail_w // n
         for s in sessions:
             sid = s["session_id"]
-            label = short_label(s.get("first_task", ""), s.get("cwd", ""), sid)
+            # Prefer user-chosen custom name, fall back to first user prompt.
+            custom = (s.get("custom_name") or "").strip()
+            full_label = custom or short_label(s.get("first_task", ""), s.get("cwd", ""), sid, limit=80)
             tab = self._tabs.get(sid)
             if tab is None:
-                tab = SessionTab(sid, self.tabbar)
+                tab = SessionTab(sid, rename_cb=self._rename_tab, parent=self.tabbar)
                 tab.clicked.connect(lambda _=False, x=sid: self._select_session(x))
-                # equal stretch factor → every tab gets the same width
                 self.tabbar_layout.addWidget(tab, 1)
                 self._tabs[sid] = tab
             state = s.get("state", "working")
-            tab.setText(label)
+            # Elide to the tab's actual available width so we never show a
+            # half-cut character. Leave ~16 px for padding/border.
+            metrics = QFontMetrics(tab.font())
+            elided = metrics.elidedText(full_label, Qt.TextElideMode.ElideRight, max(30, per_tab_w - 16))
+            tab.setText(elided)
             tab.setToolTip(self._tab_tooltip(s))
             tab.set_tabstate(state)
             has_pending = bool(s.get("pending"))
-            # Flash colour depends on what kind of attention: permission
-            # prompts / tool approvals → red; Claude asking a follow-up
-            # question → green. "done" alone is NOT flashing.
             if has_pending or state in {"allow", "input", "error"}:
                 tab.set_flashing(True, color="red")
             elif state == "awaiting_input":
@@ -771,20 +786,44 @@ class BeeperWidget(QMainWindow):
                 tab.set_flashing(False)
 
     def _tab_tooltip(self, s: dict[str, Any]) -> str:
-        lines = [
-            f"session: {s['session_id'][:8]}",
-        ]
+        lines = []
+        custom = (s.get("custom_name") or "").strip()
+        if custom:
+            lines.append(f"name: {custom}")
+        lines.append(f"session: {s['session_id'][:8]}")
         ft = s.get("first_task", "")
         if ft:
             lines.append(f"topic: {ft[:120]}")
         lines.append(f"cwd: {s.get('cwd','')}")
         lines.append(f"state: {s.get('state','?')}")
+        lines.append("right-click tab to rename")
         stats = s.get("stats") or {}
         if stats:
             lines.append(f"model: {stats.get('model_label','?')}")
             lines.append(f"ctx: {stats.get('context_pct','?')}%  ({stats.get('current_context',0):,}/{stats.get('context_limit',0):,})")
             lines.append(f"in: {stats.get('total_input',0):,}  out: {stats.get('total_output',0):,}")
         return "\n".join(lines)
+
+    def _rename_tab(self, sid: str, forced_value: str | None = None) -> None:
+        """Prompt the user for a new tab name (or clear if forced_value == '')."""
+        if forced_value is not None:
+            new_name = forced_value
+        else:
+            current = (self._sessions_snapshot.get(sid) or {}).get("custom_name") or ""
+            name, ok = QInputDialog.getText(
+                self, "Rename tab",
+                "Display name for this session:",
+                QLineEdit.EchoMode.Normal, current,
+            )
+            if not ok:
+                return
+            new_name = name.strip()
+        try:
+            requests.post(server_url("/session/name"),
+                          json={"session_id": sid, "name": new_name}, timeout=2)
+        except Exception as e:
+            self._tray.showMessage("CC-Beeper-Win", f"rename failed: {e}",
+                                   QSystemTrayIcon.MessageIcon.Warning, 2500)
 
     def _select_session(self, sid: str) -> None:
         if sid not in self._sessions_snapshot:

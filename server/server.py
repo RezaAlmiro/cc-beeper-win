@@ -415,6 +415,7 @@ async def sessions_endpoint() -> dict[str, Any]:
             "cwd": s.get("cwd", ""),
             "task": (s.get("task") or "")[:200],
             "first_task": first_task,
+            "custom_name": s.get("custom_name", ""),
             "state": s.get("state", "snoozing"),
             "tool": s.get("tool"),
             "category": s.get("category"),
@@ -506,6 +507,23 @@ async def trust_remove(request: Request) -> dict[str, Any]:
     category = body.get("category", "")
     TRUST.remove(category)
     return {"ok": True, "trust": TRUST.list_all()}
+
+
+@app.post("/session/name")
+async def session_name(request: Request) -> dict[str, Any]:
+    """Attach a user-chosen display name to a session. Persisted only in
+    memory — lives as long as the session does."""
+    body = await safe_json(request)
+    sid = body.get("session_id", "")
+    name = str(body.get("name") or "").strip()[:80]
+    if sid not in SESSIONS:
+        return {"ok": False, "error": "unknown session"}
+    if name:
+        SESSIONS[sid]["custom_name"] = name
+    else:
+        SESSIONS[sid].pop("custom_name", None)
+    log.info("session %s renamed to %r", sid[:8], name or "(cleared)")
+    return {"ok": True, "session_id": sid, "custom_name": name}
 
 
 # ---------------------------------------------------------------------------
