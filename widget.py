@@ -552,23 +552,36 @@ class BeeperWidget(QMainWindow):
 
         # Bottom controls
         btns = QHBoxLayout(); btns.setSpacing(6)
-        self.btn_rename = QPushButton("✎ rename"); self.btn_rename.setObjectName("smallBtn")
-        self.btn_prev   = QPushButton("◀");        self.btn_prev.setObjectName("iconBtn")
-        self.btn_action = QPushButton("●");        self.btn_action.setObjectName("iconBtn")
-        self.btn_next   = QPushButton("▶");        self.btn_next.setObjectName("iconBtn")
-        self.btn_compact = QPushButton("⇣ /compact"); self.btn_compact.setObjectName("smallBtn")
+        self.btn_rename = QPushButton("✎ Rename"); self.btn_rename.setObjectName("smallBtn")
+        self.btn_prev   = QPushButton("◀");         self.btn_prev.setObjectName("iconBtn")
+        self.btn_action = QPushButton("●");         self.btn_action.setObjectName("iconBtn")
+        self.btn_next   = QPushButton("▶");         self.btn_next.setObjectName("iconBtn")
+        # Slash-command dropdown (replaces the single /compact button)
+        self.btn_slash  = QPushButton("⇣ Commands ▾"); self.btn_slash.setObjectName("smallBtn")
+        slash_menu = QMenu(self)
+        for label, cmd in (
+            ("/compact  —  Summarise And Shrink Context", "/compact"),
+            ("/clear  —  Reset Conversation",             "/clear"),
+            ("/cost  —  Show Token Usage",                "/cost"),
+            ("/model  —  Switch Model",                   "/model"),
+            ("/resume  —  Resume An Earlier Session",     "/resume"),
+        ):
+            a = QAction(label, self)
+            a.triggered.connect(lambda _=False, c=cmd: self._send_cmd(c))
+            slash_menu.addAction(a)
+        self.btn_slash.setMenu(slash_menu)
+
         self.btn_rename.clicked.connect(self._rename_active)
         self.btn_prev.clicked.connect(lambda: self._cycle_session(-1))
         self.btn_action.clicked.connect(self._on_action_click)
         self.btn_next.clicked.connect(lambda: self._cycle_session(+1))
-        self.btn_compact.clicked.connect(lambda: self._send_cmd("/compact"))
         btns.addWidget(self.btn_rename)
         btns.addStretch()
         btns.addWidget(self.btn_prev)
         btns.addWidget(self.btn_action)
         btns.addWidget(self.btn_next)
         btns.addStretch()
-        btns.addWidget(self.btn_compact)
+        btns.addWidget(self.btn_slash)
         root.addLayout(btns)
 
         # ---------------- State ----------------
@@ -589,9 +602,17 @@ class BeeperWidget(QMainWindow):
         self._help = HelpDialog()
         self._strategy_actions: dict[str, QAction] = {}
         self._mode_actions: dict[str, QAction] = {}
+        self._opacity_actions: dict[int, QAction] = {}
         self._current_strategy: str | None = None
         self._current_mode: str | None = None
         self._tray = self._build_tray()
+
+        # Apply saved opacity (default 95%)
+        self._apply_opacity(int(w_cfg.get("opacity_pct", 95)))
+
+        # Right-click anywhere on the widget → main menu (tray menu reused).
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_main_menu)
 
         self._size_save_timer = QTimer(self)
         self._size_save_timer.setSingleShot(True); self._size_save_timer.setInterval(400)
@@ -670,11 +691,11 @@ class BeeperWidget(QMainWindow):
         self._render_session(s)
 
     def _render_empty(self, strategy, mode):
-        self.lbl_title.setText("— no active sessions —")
-        self.lbl_subtitle.setText(f"strategy {strategy or '?'}   ·   mode {mode or '?'}")
+        self.lbl_title.setText("— No Active Sessions —")
+        self.lbl_subtitle.setText(f"Strategy {(strategy or '?').title()}   ·   Mode {(mode or '?').title()}")
         self._set_state_dot("snoozing")
         self.ctx_bar.setValue(0); self.lbl_ctx_used.setText(""); self.lbl_ctx_left.setText("")
-        self.lbl_meta.setText("open a Claude Code session and its tab will appear here")
+        self.lbl_meta.setText("Open A Claude Code Session And Its Tab Will Appear Here")
         self.btn_action.setText("●"); self.btn_action.setProperty("accent", ""); self.btn_action.style().unpolish(self.btn_action); self.btn_action.style().polish(self.btn_action)
         pm = self._load_pixmap("snoozing.png")
         if not pm.isNull():
@@ -698,15 +719,15 @@ class BeeperWidget(QMainWindow):
 
         # Action button label + colour depending on what's going on
         if has_pending:
-            self.btn_action.setText("APPROVE?"); self.btn_action.setProperty("accent", "amber")
+            self.btn_action.setText("Approve?"); self.btn_action.setProperty("accent", "amber")
         elif state == "awaiting_input":
-            self.btn_action.setText("REPLY"); self.btn_action.setProperty("accent", "green")
+            self.btn_action.setText("Reply"); self.btn_action.setProperty("accent", "green")
         elif state == "working":
-            self.btn_action.setText("working…"); self.btn_action.setProperty("accent", "red")
+            self.btn_action.setText("Working…"); self.btn_action.setProperty("accent", "red")
         elif state == "done":
-            self.btn_action.setText("done"); self.btn_action.setProperty("accent", "green")
+            self.btn_action.setText("Done"); self.btn_action.setProperty("accent", "green")
         else:
-            self.btn_action.setText("focus"); self.btn_action.setProperty("accent", "")
+            self.btn_action.setText("Focus"); self.btn_action.setProperty("accent", "")
         self.btn_action.style().unpolish(self.btn_action); self.btn_action.style().polish(self.btn_action)
 
         # Context bar + labels
@@ -727,9 +748,9 @@ class BeeperWidget(QMainWindow):
             self.lbl_ctx_left.setText("")
 
         self.lbl_meta.setText(
-            f"in {fmt_tokens(stats.get('total_input', 0))}   ·   "
-            f"out {fmt_tokens(stats.get('total_output', 0))}   ·   "
-            f"cache {fmt_tokens(stats.get('total_cache_read', 0))}"
+            f"In {fmt_tokens(stats.get('total_input', 0))}   ·   "
+            f"Out {fmt_tokens(stats.get('total_output', 0))}   ·   "
+            f"Cache {fmt_tokens(stats.get('total_cache_read', 0))}"
         )
 
         # Sprite
@@ -960,38 +981,81 @@ class BeeperWidget(QMainWindow):
         icon_path = ASSETS / "snoozing.png"
         icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
         tray = QSystemTrayIcon(icon, self); tray.setToolTip("CC-Beeper-Win")
-        menu = QMenu()
-        show_act = QAction("Show / Hide widget", self); show_act.triggered.connect(self._toggle_visibility); menu.addAction(show_act)
+        self._main_menu = QMenu()
+        menu = self._main_menu
+        show_act = QAction("Show / Hide Widget", self); show_act.triggered.connect(self._toggle_visibility); menu.addAction(show_act)
         menu.addSeparator()
         self._strat_menu = menu.addMenu("Strategy:  …")
         for label, value in (
-            ("Assist  (widget decides)  [default]", "assist"),
-            ("Observer  (never override Claude)",   "observer"),
-            ("Auto  (headless rules + Gemini)",     "auto"),
+            ("Assist  (Widget Decides)  [default]", "assist"),
+            ("Observer  (Never Override Claude)",   "observer"),
+            ("Auto  (Headless Rules + Gemini)",     "auto"),
         ):
             a = QAction(label, self); a.setCheckable(True)
             a.triggered.connect(lambda _=False, v=value: self._set_strategy(v))
             self._strat_menu.addAction(a); self._strategy_actions[value] = a
         self._mode_menu = menu.addMenu("Mode:  …")
         for m, descr in (
-            ("strict",  "ask for everything except reads"),
-            ("relaxed", "reads + git-read fly; writes + network ask  [default]"),
-            ("trusted", "+ project writes and local git operations"),
-            ("yolo",    "auto-allow almost everything (safety net still on)"),
+            ("strict",  "Ask For Everything Except Reads"),
+            ("relaxed", "Reads + Git-Read Fly; Writes + Network Ask  [default]"),
+            ("trusted", "+ Project Writes And Local Git Operations"),
+            ("yolo",    "Auto-Allow Almost Everything (Safety Net Still On)"),
         ):
             a = QAction(f"{m.upper()}  —  {descr}", self); a.setCheckable(True)
             a.triggered.connect(lambda _=False, mode=m: self._set_mode(mode))
             self._mode_menu.addAction(a); self._mode_actions[m] = a
+
+        # Opacity submenu with checkable presets + custom slider dialog
+        opacity_menu = menu.addMenu("Opacity:  …")
+        self._opacity_menu = opacity_menu
+        for pct in (60, 75, 85, 95, 100):
+            a = QAction(f"{pct}%", self); a.setCheckable(True)
+            a.triggered.connect(lambda _=False, v=pct: self._apply_opacity(v, save=True))
+            opacity_menu.addAction(a)
+            self._opacity_actions[pct] = a
+        opacity_menu.addSeparator()
+        custom = QAction("Custom…", self); custom.triggered.connect(self._set_opacity_custom)
+        opacity_menu.addAction(custom)
+
         menu.addSeparator()
         h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
-        s = QAction("Manage trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
-        c = QAction("Clear session trust", self); c.triggered.connect(self._clear_session_trust); menu.addAction(c)
+        s = QAction("Manage Trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
+        c = QAction("Clear Session Trust", self); c.triggered.connect(self._clear_session_trust); menu.addAction(c)
         menu.addSeparator()
-        q = QAction("Quit widget", self); q.triggered.connect(QApplication.instance().quit); menu.addAction(q)
+        q = QAction("Quit Widget", self); q.triggered.connect(QApplication.instance().quit); menu.addAction(q)
         tray.setContextMenu(menu)
         tray.activated.connect(lambda reason: self._toggle_visibility() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
         tray.show()
         return tray
+
+    def _show_main_menu(self, pos):
+        """Right-click anywhere on the widget pops up the same menu the
+        tray icon uses — so the user doesn't have to hunt for the tray."""
+        if hasattr(self, "_main_menu"):
+            self._main_menu.exec_(self.mapToGlobal(pos))
+
+    def _apply_opacity(self, pct: int, *, save: bool = False) -> None:
+        pct = max(20, min(100, int(pct)))
+        self.setWindowOpacity(pct / 100.0)
+        for v, act in self._opacity_actions.items():
+            act.setChecked(v == pct)
+        if hasattr(self, "_opacity_menu"):
+            self._opacity_menu.setTitle(f"Opacity:  {pct}%")
+        if save:
+            try:
+                cfg = load_cfg()
+                cfg.setdefault("widget", {})["opacity_pct"] = pct
+                CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+
+    def _set_opacity_custom(self) -> None:
+        current = int(self.windowOpacity() * 100)
+        pct, ok = QInputDialog.getInt(
+            self, "Widget Opacity", "Opacity (%)", current, 20, 100, 5,
+        )
+        if ok:
+            self._apply_opacity(pct, save=True)
 
     def _sync_menu_selections(self, strategy, mode):
         if strategy and strategy != self._current_strategy:
