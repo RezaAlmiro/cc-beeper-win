@@ -11,7 +11,11 @@ ladder, context + token meters, and a small pixel-art pet bedroom.
 > shaped through back-and-forth with the model. Feel free to fork,
 > hack, or rebuild for your own setup.
 
-![screenshot placeholder]()
+<p align="center">
+  <img src="assets/screenshot.png" alt="CC-Beeper-Win widget — done state" width="280">
+</p>
+
+<p align="center"><i>Widget in the <b>done</b> state — the /telegram:access tab has turned green because Claude finished its turn, and the meter shows Opus 4.7 at 42% of a 1M context window.</i></p>
 
 ## What it does
 
