@@ -2231,7 +2231,8 @@ class BeeperWidget(QWidget):
         self._active_sid: str | None = None
         self._dragging = False
         self._drag_offset = QPoint(); self._drag_moved = False
-        self._resize_margin = 6
+        self._resize_margin = 6           # straight-edge hot zone
+        self._corner_resize_margin = 14   # corner hot zone (both axes within)
         self.setMinimumSize(320, 160)
         self.resize(self.w_px, self.h_px)
         self._dock_corner = w_cfg.get("corner", "bottom-right")
@@ -3348,13 +3349,42 @@ class BeeperWidget(QWidget):
         self._dragging = False
 
     def _edges_at(self, pos):
-        m = self._resize_margin
+        """Return Qt.Edge mask for the position inside the widget.
+
+        Two different hot zones:
+        - side margin (6 px): within this distance from ONE edge, only
+          that edge is active → horizontal or vertical resize cursor.
+        - corner margin (14 px): within this distance from BOTH a
+          horizontal AND vertical edge, BOTH edges are active → diagonal
+          resize cursor. The corner zone is ~5× larger than the old
+          6×6 square, making corner-grab actually feasible.
+
+        Corners take priority: a click in the corner zone is always a
+        corner resize, never a side resize, even if the cursor is also
+        within the (smaller) side margin."""
+        side_m   = self._resize_margin
+        corner_m = self._corner_resize_margin
         r = self.rect()
+        x, y = pos.x(), pos.y()
+        w, h = r.width(), r.height()
+
+        near_left   = x <= corner_m
+        near_right  = x >= w - corner_m
+        near_top    = y <= corner_m
+        near_bottom = y >= h - corner_m
+
+        # Corner first — both axes within the (larger) corner margin.
+        if near_left and near_top:     return Qt.LeftEdge  | Qt.TopEdge
+        if near_right and near_top:    return Qt.RightEdge | Qt.TopEdge
+        if near_left and near_bottom:  return Qt.LeftEdge  | Qt.BottomEdge
+        if near_right and near_bottom: return Qt.RightEdge | Qt.BottomEdge
+
+        # Side only — within the (smaller) side margin of exactly one edge.
         edges = Qt.Edge(0)
-        if pos.x() <= m:                     edges |= Qt.LeftEdge
-        elif pos.x() >= r.width() - m:       edges |= Qt.RightEdge
-        if pos.y() <= m:                     edges |= Qt.TopEdge
-        elif pos.y() >= r.height() - m:      edges |= Qt.BottomEdge
+        if x <= side_m:          edges |= Qt.LeftEdge
+        elif x >= w - side_m:    edges |= Qt.RightEdge
+        if y <= side_m:          edges |= Qt.TopEdge
+        elif y >= h - side_m:    edges |= Qt.BottomEdge
         return edges
 
     def _cursor_for_edges(self, edges):
@@ -3394,12 +3424,23 @@ class BeeperWidget(QWidget):
                 QGuiApplication.restoreOverrideCursor()
             return False
         if et == QEvent.Type.MouseButtonPress and edges:
-            try:
-                wh = self.windowHandle()
-                if wh is not None:
-                    wh.startSystemResize(edges); return True
-            except Exception:
-                pass
+            # Only start resize when the mouse landed on a layout-level
+            # widget (self, the GlassPanel, or an InvisibleContainer
+            # wrapper). Clicks on interactive children — buttons, labels,
+            # the action circle, the ticker — fall through to the child
+            # so their clicks aren't hijacked by a corner hot-zone that
+            # happens to overlap them.
+            can_resize_target = (
+                obj is self
+                or isinstance(obj, (GlassPanel, InvisibleContainer))
+            )
+            if can_resize_target:
+                try:
+                    wh = self.windowHandle()
+                    if wh is not None:
+                        wh.startSystemResize(edges); return True
+                except Exception:
+                    pass
         return False
 
     # -- tray + menu ------------------------------------------------------
