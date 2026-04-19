@@ -115,6 +115,19 @@ start_widget.bat   # relaunches just the widget (server keeps running)
 Or `start_all.bat` to restart both. Widget crashes are logged to
 `widget.log` — check there first if it won't stay open.
 
+### Desktop / Start Menu / taskbar shortcut (recommended)
+
+```bash
+install_launcher.bat   # creates Desktop + Start Menu shortcuts with a proper icon
+```
+
+This places a **CC-Beeper-Win** shortcut on your Desktop and in the
+Start Menu. Right-click either one → **Pin to taskbar** for a
+one-click relaunch from your taskbar. Clicking the shortcut runs
+`launcher.pyw` which is idempotent: it starts the server and widget
+if they aren't already running, and does nothing if they are. Safe
+to click as many times as you want.
+
 ### Auto-launch on login (optional)
 
 ```bash
