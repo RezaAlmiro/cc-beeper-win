@@ -635,7 +635,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
   <li><b>◀ / ▶ Arrows</b> — Cycle Through Active Sessions. Size Matches The State Circle So The Bottom Row Feels Balanced.</li>
-  <li><b>Session Tabs (Top Of The Panel)</b> — Browser-Style Tabs Integrated Into The Top Edge Of The Glass Body. Each Tab Carries A 3-Pixel State-Coloured Stripe Along Its Top, So You Can See Every Session's Status At A Glance. The Active Tab Lifts Slightly, Has A Thicker Coloured Stripe, And Blends Into The Body Below. Click Any Tab To Switch. New Sessions Appear As New Tabs Automatically.</li>
+  <li><b>Session Tabs (Top Of The Panel)</b> — Browser-Style Tabs Integrated Into The Top Edge Of The Glass Body. Each Tab Carries A 3-Pixel State-Coloured Stripe Along Its Top, So You Can See Every Session's Status At A Glance. The Active Tab Lifts Slightly, Has A Thicker Coloured Stripe, And Blends Into The Body Below. Click Any Tab To Switch. <b>Right-Click A Tab</b> For A Per-Tab Menu: Rename, Send Slash Command, Export Stats, Close Tab. New Sessions Appear As New Tabs Automatically.</li>
   <li><b>☰ Playlist Button (Far Left Of The Tab Strip)</b> — Opens A Menu Listing Every Active Session With Its Coloured State Dot. A Third Way To Switch (Alongside Tabs And ◀ / ▶). Useful When You Have Many Tabs And Want A Compact Scroll-Able List.</li>
   <li><b>⇣ Commands ▾</b> — Dropdown With /compact, /clear, /cost, /model, /resume. Focuses The Session's Terminal And Types The Command.</li>
   <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
@@ -1208,6 +1208,11 @@ class BeeperWidget(QMainWindow):
                 btn = QPushButton(self.tabbar)
                 btn.setProperty("class", "miniTab")
                 btn.clicked.connect(lambda _=False, x=sid: self._select_session(x))
+                # Right-click → per-tab menu (rename / close).
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(
+                    lambda pos, x=sid: self._tab_context_menu(x, pos)
+                )
                 # Insert before the trailing stretch. Because ☰ is at index 0
                 # and the stretch is last, new tabs land between them.
                 self.tabbar_layout.insertWidget(self.tabbar_layout.count() - 1, btn)
@@ -1257,6 +1262,98 @@ class BeeperWidget(QMainWindow):
         s = next((x for x in self._sessions if x["session_id"] == sid), None)
         if s: self._render_session(s)
         self._refresh_tabbar(self._sessions)
+
+    # -- per-tab context menu (right-click a tab) -------------------------
+
+    def _tab_context_menu(self, sid: str, pos) -> None:
+        """Right-click on a tab: rename, send slash commands, close."""
+        snap = next((s for s in self._sessions if s["session_id"] == sid), None)
+        if snap is None:
+            return
+        menu = QMenu(self)
+        rename = QAction("Rename Tab…", self)
+        rename.triggered.connect(lambda: self._rename_session(sid))
+        menu.addAction(rename)
+
+        cmd_menu = menu.addMenu("Send Slash Command")
+        for label, cmd in (
+            ("/compact",  "/compact"),
+            ("/clear",    "/clear"),
+            ("/cost",     "/cost"),
+            ("/model",    "/model"),
+            ("/resume",   "/resume"),
+        ):
+            a = QAction(label, self)
+            a.triggered.connect(lambda _=False, c=cmd, x=sid: self._send_cmd_for(x, c))
+            cmd_menu.addAction(a)
+
+        ex = QAction("📄  Export This Session's Stats To Txt…", self)
+        ex.triggered.connect(lambda: self._export_session_stats(sid=sid))
+        menu.addAction(ex)
+
+        menu.addSeparator()
+        close = QAction("✗  Close Tab", self)
+        close.triggered.connect(lambda: self._close_tab(sid))
+        menu.addAction(close)
+
+        btn = self._tab_buttons.get(sid)
+        if btn is not None:
+            menu.exec_(btn.mapToGlobal(pos))
+
+    def _rename_session(self, sid: str) -> None:
+        snap = next((s for s in self._sessions if s["session_id"] == sid), None)
+        if snap is None:
+            return
+        current = (snap.get("custom_name") or "").strip()
+        name, ok = QInputDialog.getText(
+            self, "Rename Session",
+            f"Display Name For\n{session_label(snap)[:60]}:",
+            QLineEdit.EchoMode.Normal, current,
+        )
+        if not ok:
+            return
+        try:
+            requests.post(server_url("/session/name"),
+                          json={"session_id": sid, "name": name.strip()}, timeout=2)
+        except Exception:
+            pass
+
+    def _send_cmd_for(self, sid: str, cmd: str) -> None:
+        """Variant of _send_cmd that lets a right-click menu target a
+        non-active tab. Switches focus to that session first."""
+        if sid != self._active_sid:
+            self._select_session(sid)
+        self._send_cmd(cmd)
+
+    def _close_tab(self, sid: str) -> None:
+        """Drop the session from the widget. If the underlying Claude
+        process keeps firing hooks, the tab will return on its next hook;
+        if it doesn't, the tab stays gone. Useful for clearing stale
+        entries without closing the terminal."""
+        snap = next((s for s in self._sessions if s["session_id"] == sid), None)
+        name = session_label(snap) if snap else sid[:8]
+        reply = QMessageBox.question(
+            self, "Close Tab",
+            f"Remove this tab from the widget?\n\n  {name}\n\n"
+            "(The underlying Claude Code session isn't killed. If it's "
+            "still running the tab will reappear on its next hook.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            requests.post(server_url("/sessionend"),
+                          json={"session_id": sid}, timeout=2)
+        except Exception:
+            pass
+        # Optimistic local cleanup — the next poll will reconcile too.
+        btn = self._tab_buttons.pop(sid, None)
+        if btn is not None:
+            self.tabbar_layout.removeWidget(btn)
+            btn.deleteLater()
+        if self._active_sid == sid:
+            self._active_sid = None
 
     def _render_empty(self, strategy, mode):
         self.lbl_title.setText("— No Active Sessions —")
@@ -1594,10 +1691,13 @@ class BeeperWidget(QMainWindow):
         lines.append("github.com/RezaAlmiro/cc-beeper-win")
         return "\n".join(lines)
 
-    def _export_session_stats(self) -> None:
-        s = self._active_session()
+    def _export_session_stats(self, sid: str | None = None) -> None:
+        if sid is not None:
+            s = next((x for x in self._sessions if x["session_id"] == sid), None)
+        else:
+            s = self._active_session()
         if not s:
-            QMessageBox.warning(self, "No Session", "There's no active session to export.")
+            QMessageBox.warning(self, "No Session", "There's no session to export.")
             return
         import datetime
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
