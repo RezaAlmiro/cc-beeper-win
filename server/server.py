@@ -45,6 +45,7 @@ from classify import classify  # noqa: E402
 from trust import TrustStore, mode_decision  # noqa: E402
 from security import regex_flags, gemini_classify, GEMINI_CHECK_CATEGORIES  # noqa: E402
 from stats import parse_transcript, first_user_prompt, latest_assistant_narrative  # noqa: E402
+from usage import aggregate_usage  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config.json"
@@ -592,6 +593,15 @@ async def set_strategy(request: Request) -> dict[str, Any]:
 @app.get("/trust")
 async def trust_list() -> dict[str, Any]:
     return TRUST.list_all()
+
+
+@app.get("/usage")
+async def usage_rollup() -> dict[str, Any]:
+    """Aggregate token usage across EVERY local Claude Code transcript.
+    Results are cached per-transcript by mtime so repeat calls are cheap.
+    Returns totals for 1h / 5h / today / this-week / all-time plus a
+    top-20 per-project breakdown."""
+    return aggregate_usage()
 
 
 @app.post("/trust/add")

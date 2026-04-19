@@ -796,6 +796,14 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li>Drop To A Cheaper Model With <b>/model</b> For Routine Edits; Promote Back To Opus For Hard Reasoning.</li>
 </ul>
 
+<h3 style="color:#1F2430">Claude Usage Overview</h3>
+<p style="color:#60667A">Right-Click → <b>Claude Usage Overview…</b> Opens A Rollup Of Your Token Usage Across Every Local Claude Code Transcript Under <b>~/.claude/projects/</b>.</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Last 1 Hour</b>, <b>Last 5 Hours (Max Rate-Limit Window)</b>, <b>Today</b>, <b>This Week</b>, <b>All-Time</b> — Each Window Shows Turns, Sessions, And Input / Output / Cache-Read / Cache-Write Tokens.</li>
+  <li><b>Top Projects</b> — Ranked By Input + Output Tokens Across All Sessions In That Project Folder.</li>
+</ul>
+<p style="color:#60667A">Max / Team / Pro Subscribers Should Watch The <b>Last 5 Hours</b> Row — That's The Rolling Window Anthropic Uses For Rate Limits. API Users Can Take The Token Counts And Multiply By Their Plan's Per-Token Pricing For Dollar Estimates. Walks Every JSONL Under Your Claude Projects Dir; Cached By File Mtime So Repeat Opens Are Fast.</p>
+
 <h3 style="color:#1F2430">Sound Cues</h3>
 <p style="color:#60667A">Three Soft Melodic Chimes, Each For A Different State Transition:</p>
 <ul style="color:#1F2430; line-height:1.6">
@@ -840,6 +848,131 @@ class HelpDialog(QDialog):
         close_btn = QPushButton("Close"); close_btn.setObjectName("iconBtn")
         close_btn.clicked.connect(self.hide)
         outer.addWidget(close_btn)
+
+
+class UsageDialog(QDialog):
+    """Aggregate 'how much Claude have I used' view — windows for
+    1 h / 5 h / today / week / all-time plus a per-project list.
+    Useful for Max-plan rate-limit awareness and for API users who want
+    to eyeball their consumption."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("CC-Beeper-Win — Claude Usage Overview")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.setStyleSheet(BUTTON_CSS + SETTINGS_CSS + """
+            QLabel#wlabel { color: #1F2430; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 800; padding: 8px 0 2px 0; }
+            QLabel#wbody  { color: #1F2430; font-family: Consolas, monospace; font-size: 11px; padding: 2px 8px 8px 8px; }
+            QLabel#proj   { color: #1F2430; font-family: Consolas, monospace; font-size: 11px; padding: 1px 8px; }
+        """)
+        self.resize(560, 560)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10); outer.setSpacing(4)
+
+        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._inner = QWidget()
+        self._inner.setStyleSheet("background: rgba(255,255,255,235); border: 1px solid rgba(0,0,0,25); border-radius: 6px;")
+        self._inner_layout = QVBoxLayout(self._inner)
+        self._inner_layout.setContentsMargins(10, 10, 10, 10); self._inner_layout.setSpacing(0)
+        area.setWidget(self._inner)
+        outer.addWidget(area, stretch=1)
+
+        row = QHBoxLayout(); row.setSpacing(6)
+        refresh = QPushButton("↻  Reload"); refresh.setObjectName("iconBtn")
+        refresh.clicked.connect(self.refresh)
+        close_btn = QPushButton("Close"); close_btn.setObjectName("iconBtn")
+        close_btn.clicked.connect(self.hide)
+        row.addWidget(refresh); row.addStretch(); row.addWidget(close_btn)
+        outer.addLayout(row)
+
+    def showEvent(self, event) -> None:
+        self.refresh()
+        super().showEvent(event)
+
+    def _clear_inner(self) -> None:
+        while self._inner_layout.count():
+            item = self._inner_layout.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.deleteLater()
+
+    def refresh(self) -> None:
+        self._clear_inner()
+        try:
+            data = requests.get(server_url("/usage"), timeout=8).json()
+        except Exception as e:
+            err = QLabel(f"Couldn't reach server: {e}")
+            err.setStyleSheet("color: #C23A3A; font-family: Consolas, monospace; padding: 8px;")
+            self._inner_layout.addWidget(err); return
+
+        if not data.get("projects_dir_exists"):
+            err = QLabel(f"Projects directory not found:\n{data.get('projects_dir','?')}")
+            err.setStyleSheet("color: #C23A3A; font-family: Consolas, monospace; padding: 8px;")
+            self._inner_layout.addWidget(err); return
+
+        import datetime as _dt
+        stamp = _dt.datetime.fromtimestamp(data.get("generated_at", 0)).strftime("%Y-%m-%d %H:%M:%S")
+        header = QLabel(
+            f"<b>Claude Usage Overview</b>&nbsp; · &nbsp;"
+            f"<span style='color:#60667A'>Scanned {data.get('files_scanned',0)} "
+            f"transcripts @ {stamp}</span>"
+        )
+        header.setTextFormat(Qt.TextFormat.RichText)
+        header.setStyleSheet("font-family: 'Segoe UI', sans-serif; font-size: 13px; padding: 0 0 8px 0;")
+        self._inner_layout.addWidget(header)
+
+        labels = data.get("window_labels") or {}
+        windows = data.get("windows") or {}
+        for key in ("last_1h", "last_5h", "today", "this_week", "all"):
+            bucket = windows.get(key) or {}
+            title = labels.get(key, key)
+            self._inner_layout.addWidget(self._section(title, bucket))
+
+        self._inner_layout.addWidget(self._section_header("Top Projects By Output Tokens"))
+        projects = data.get("by_project") or []
+        if not projects:
+            self._inner_layout.addWidget(self._line("— none —"))
+        else:
+            for row in projects[:10]:
+                self._inner_layout.addWidget(self._project_row(row))
+
+        self._inner_layout.addStretch(1)
+
+    def _section_header(self, text: str) -> QLabel:
+        lbl = QLabel(text); lbl.setObjectName("wlabel"); return lbl
+
+    def _line(self, text: str) -> QLabel:
+        lbl = QLabel(text); lbl.setObjectName("wbody"); return lbl
+
+    def _section(self, title: str, bucket: dict[str, Any]) -> QWidget:
+        wrap = QWidget()
+        v = QVBoxLayout(wrap); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
+        v.addWidget(self._section_header(title))
+        body = QLabel(
+            f"  Turns        : {bucket.get('turns',0):>10,}\n"
+            f"  Sessions     : {bucket.get('sessions',0):>10,}\n"
+            f"  Input (fresh): {bucket.get('input',0):>10,}  tokens\n"
+            f"  Output       : {bucket.get('output',0):>10,}  tokens\n"
+            f"  Cache Read   : {bucket.get('cache_read',0):>10,}  tokens\n"
+            f"  Cache Write  : {bucket.get('cache_write',0):>10,}  tokens"
+        )
+        body.setObjectName("wbody")
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(body)
+        return wrap
+
+    def _project_row(self, row: dict[str, Any]) -> QLabel:
+        name = row.get("project", "?")
+        in_out = row.get("input", 0) + row.get("output", 0)
+        turns = row.get("turns", 0)
+        sessions = row.get("sessions", 0)
+        label = QLabel(
+            f"  {name[:44]:<44}  {in_out:>12,} tk   "
+            f"{turns:>5,} turns   {sessions:>3,} sessions"
+        )
+        label.setObjectName("proj")
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        return label
 
 
 class TrustSettings(QDialog):
@@ -1101,6 +1234,7 @@ class BeeperWidget(QMainWindow):
 
         self._popup = ApprovalPopup(self._resolve)
         self._settings = TrustSettings()
+        self._usage = UsageDialog()
         self._help = HelpDialog()
         self._strategy_actions: dict[str, QAction] = {}
         self._mode_actions: dict[str, QAction] = {}
@@ -2064,6 +2198,7 @@ class BeeperWidget(QMainWindow):
         menu.addAction(self._sound_action)
 
         menu.addSeparator()
+        u = QAction("Claude Usage Overview…", self); u.triggered.connect(self._show_usage); menu.addAction(u)
         h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
         s = QAction("Manage Trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
         c = QAction("Clear Session Trust", self); c.triggered.connect(self._clear_session_trust); menu.addAction(c)
@@ -2130,6 +2265,10 @@ class BeeperWidget(QMainWindow):
 
     def _show_help(self):
         self._help.show(); self._help.raise_(); self._help.activateWindow()
+
+    def _show_usage(self):
+        self._usage.refresh()
+        self._usage.show(); self._usage.raise_(); self._usage.activateWindow()
 
     def _show_settings(self):
         self._settings.refresh(); self._settings.show(); self._settings.raise_(); self._settings.activateWindow()
