@@ -706,7 +706,17 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Title</b> — The Session's Name. Starts As Your First Prompt And You Can Rename It Anytime (Button Or Right-Click). Right-Clicking The Title Also Reveals A Per-Session Slash-Command Menu.</li>
   <li><b>Subtitle</b> — Project Folder  ·  Model (E.g. "Cc-Beeper-Win  ·  Opus 4.7 (1M)").</li>
   <li><b>State Badge (Top-Right)</b> — A Coloured Pill Spelling The Live State ("Working", "Done", "Input", "Approve", "Error", "Idle"). Background Colour Matches The Action Circle So Everything Visually Agrees.</li>
-  <li><b>Ticker Line (Between Title And Context Bar)</b> — A News-Ticker-Style Crawler Showing Claude's Turn-By-Turn Progress. While Working It Renders A Numbered Step List — "Step 1 ✓ Read Widget.py  ·  Step 2 ✓ Grep TODO  ·  Step 3 ⏳ Editing Widget.py" — With ✓ For Completed Steps And ⏳ For The One In Flight. When Claude Has Written Any Prose Between Tool Calls (The "Thinking" Text You'd See With Ctrl+O), It's Appended In Quotes So You Can Read His Running Commentary. Scrolls Leftward When Longer Than The Widget Is Wide; Stationary If It Fits. Pending Approval → "⏸ Awaiting Approval: …". Input Needed → "💬 Claude Is Asking: …". Done → "✓ Turn Finished — 7 Steps — Last: Edit, Bash, Read". Idle → Quiet Placeholder.</li>
+  <li><b>Ticker Line (Between Title And Context Bar)</b> — A Single-Line Glance-At-A-Time Status Digest Tuned For Developers. The Shape Changes With State:
+    <ul>
+      <li><b>Working</b> → <code>⚙ Edit: Widget.Py · 4 Tools In 1m 23s · Ctx 34%</code></li>
+      <li><b>Done</b> → <code>✓ Done — 5 Edits, 3 Bashes, 2 Reads · In 2m 15s · Awaiting Prompt</code></li>
+      <li><b>Awaiting Your Reply</b> → <code>💬 Claude Asks: &lt;Short Question&gt;</code></li>
+      <li><b>Approval Pending</b> → <code>⏸ Needs Approval: Bash — Curl …</code></li>
+      <li><b>Error</b> → <code>✗ &lt;Error Summary&gt;</code></li>
+      <li><b>Idle</b> → <code>Ready — Waiting For Your Input</code></li>
+    </ul>
+    Context Pressure Warnings (<code>⚠ Ctx 87% — /Compact Now</code>) Appear Automatically Past 70 / 85 Percent Thresholds. Scrolls Leftward Only If It Overflows The Widget.
+  </li>
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
@@ -1967,62 +1977,126 @@ class BeeperWidget(QMainWindow):
 
     # -- actions ----------------------------------------------------------
 
+    @staticmethod
+    def _ticker_short(text: str, max_chars: int = 60) -> str:
+        """Collapse whitespace + clip at a word boundary with an ellipsis."""
+        text = " ".join((text or "").split())
+        if len(text) <= max_chars:
+            return text
+        clipped = text[:max_chars]
+        sp = clipped.rfind(" ")
+        if sp >= 16:
+            clipped = clipped[:sp]
+        return clipped.rstrip(",.;:—-") + "…"
+
+    @staticmethod
+    def _ticker_elapsed(start_ts: float | None, end_ts: float | None = None) -> str:
+        """Human-friendly 's' / 'Xm Ys' / 'Xh Ym'."""
+        if not start_ts:
+            return ""
+        import time as _t
+        end = end_ts if end_ts else _t.time()
+        sec = max(0, int(end - start_ts))
+        if sec < 60:    return f"{sec}s"
+        if sec < 3600:  return f"{sec // 60}m {sec % 60:02d}s"
+        return f"{sec // 3600}h {(sec % 3600) // 60:02d}m"
+
     def _build_ticker_text(self, s: dict[str, Any], state: str,
                            has_pending: bool, pending: list) -> str:
-        """Compose a step-by-step narrative of the current turn. Shape:
+        """A single-line digest tuned for glance-ability. Shape varies by
+        state but always answers 'what's happening NOW' in ≤ 1 line:
 
-            Step 1 ✓ Read widget.py  ·  Step 2 ✓ Grep TODO  ·
-            Step 3 ⏳ Editing widget.py  ·  "Let me refactor the helper…"
+            working  → ⚙ Edit: widget.py · 4 tools in 1m 23s · ctx 34%
+            done     → ✓ Done in 2m 15s · 5 edits, 3 bash · awaiting prompt
+            awaiting → 💬 Claude asks: <short question>
+            approval → ⏸ Needs approval: Bash — curl …
+            error    → ✗ <error summary>
+            idle     → Ready — waiting for input
+        """
+        stats = s.get("stats") or {}
+        ctx_pct = float(stats.get("context_pct", 0) or 0)
 
-        Falls back to quiet status prose for non-working states."""
         if has_pending:
             p = pending[0]
-            return f"⏸ Awaiting Approval: {p.get('tool','?')} — {p.get('summary','')[:160]}"
+            tool = p.get("tool") or "?"
+            summary = self._ticker_short(p.get("summary") or "", 80)
+            return f"⏸ Needs Approval: {tool}" + (f" — {summary}" if summary else "")
+
         if state == "awaiting_input":
-            msg = (s.get("message") or "Claude Asked You A Follow-Up")[:200]
-            return f"💬 Claude Is Asking: {msg}"
+            msg = self._ticker_short(s.get("message") or "Claude Asked A Follow-Up", 140)
+            return f"💬 Claude Asks: {msg}"
+
         if state == "error":
-            return f"✗ {(s.get('message') or 'Last turn failed')[:220]}"
+            msg = self._ticker_short(s.get("message") or "Last turn failed", 160)
+            return f"✗ {msg}"
 
         steps = s.get("current_turn_steps") or []
-        narrative = (s.get("narrative") or "").strip()
+        narrative = self._ticker_short(s.get("narrative") or "", 80)
+        start_ts = s.get("turn_start_ts")
+        stopped = s.get("stopped_at")
 
         if state == "working":
-            if not steps and not narrative:
-                return "⚙ Claude Is Thinking…"
-            pieces: list[str] = []
+            # Pick ONE focus line: the in-flight tool if any, else Claude's
+            # latest thought, else a generic placeholder.
+            current = None
+            done_count = 0
+            for step in steps:
+                st = step.get("status")
+                if st == "running" and current is None:
+                    current = step
+                elif st == "done":
+                    done_count += 1
+            if current:
+                tool = current.get("tool") or "?"
+                summary = self._ticker_short(current.get("summary") or "", 60)
+                core = f"⚙ {tool}" + (f": {summary}" if summary else "")
+            elif narrative:
+                core = f"⚙ \u201C{narrative}\u201D"
+            else:
+                core = "⚙ Thinking…"
+
+            parts = [core]
+            elapsed = self._ticker_elapsed(start_ts)
             total = len(steps)
-            # Up to the last 6 steps so the line doesn't balloon
-            tail_count = min(6, total)
-            start_idx = total - tail_count
-            for i, step in enumerate(steps[-tail_count:], start=start_idx + 1):
-                mark = "✓" if step.get("status") == "done" else "⏳"
-                tool = step.get("tool") or "?"
-                summary = step.get("summary") or ""
-                label = f"Step {i} {mark} {tool}"
-                if summary:
-                    label += f": {summary[:70]}"
-                pieces.append(label)
-            if narrative:
-                # Quote Claude's latest prose so it's obvious it's his voice
-                pieces.append(f"\u201C{narrative[:200]}\u201D")
-            return "   ·   ".join(pieces)
+            if total >= 2 and elapsed:
+                parts.append(f"{total} tool{'s' if total != 1 else ''} in {elapsed}")
+            elif elapsed:
+                parts.append(elapsed)
+
+            # Context pressure warning — only when it starts to matter.
+            if ctx_pct >= 85:
+                parts.append(f"⚠ ctx {ctx_pct:.0f}% — /compact now")
+            elif ctx_pct >= 70:
+                parts.append(f"ctx {ctx_pct:.0f}% — /compact soon")
+
+            return "  ·  ".join(parts)
 
         if state == "done":
+            parts: list[str] = []
+            elapsed = self._ticker_elapsed(start_ts, stopped)
             if steps:
-                total = len(steps)
-                done_tools = [st.get("tool") for st in steps if st.get("status") == "done"]
-                last3 = " · ".join(t for t in done_tools[-3:] if t)
-                base = f"✓ Turn Finished — {total} Step{'s' if total != 1 else ''}"
-                if last3:
-                    base += f" — last: {last3}"
-                if narrative:
-                    base += f"   ·   \u201C{narrative[:180]}\u201D"
-                return base
-            return "✓ Turn Finished — Ready For Next Prompt"
+                # Group tools by name so the summary is compact
+                counts: dict[str, int] = {}
+                for st in steps:
+                    t = st.get("tool") or "?"
+                    counts[t] = counts.get(t, 0) + 1
+                # keep the top 3 most-used tools
+                top = sorted(counts.items(), key=lambda kv: -kv[1])[:3]
+                summary = ", ".join(
+                    f"{c} {t.lower()}{'s' if c > 1 else ''}" for t, c in top
+                )
+                parts.append(f"✓ Done — {summary}")
+            else:
+                parts.append("✓ Done")
+            if elapsed:
+                parts.append(f"in {elapsed}")
+            if ctx_pct >= 70:
+                parts.append(f"ctx {ctx_pct:.0f}%")
+            parts.append("awaiting prompt")
+            return "  ·  ".join(parts)
 
         # idle / snoozing
-        return "⏳ Idle — Waiting For Your First Prompt"
+        return "Ready — Waiting For Your Input"
 
     def _cycle_session(self, delta: int):
         if not self._sessions:
