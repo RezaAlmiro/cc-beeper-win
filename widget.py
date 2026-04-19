@@ -327,26 +327,63 @@ QPushButton#arrowCircle {
 }
 QPushButton#arrowCircle:hover { border: 1px solid #1F2430; background: rgba(255,255,255,230); }
 
-/* Notebook-style mini tabs above the HUD body */
+/* Browser-style session tabs integrated into the top of the glass panel.
+   Active tab blends into the body; inactives are dimmer and slightly
+   shorter. Each tab carries a state-coloured stripe on its top edge. */
 QPushButton.miniTab {
-    background: rgba(255, 255, 255, 140);
+    background: rgba(255, 255, 255, 110);
     color: #1F2430;
-    border: 1px solid rgba(0, 0, 0, 40);
+    border: 1px solid rgba(0, 0, 0, 35);
     border-bottom: none;
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
     font-family: 'Segoe UI', sans-serif;
-    font-size: 10px; font-weight: 700;
-    padding: 3px 9px;
-    min-height: 20px;
+    font-size: 11px; font-weight: 600;
+    padding: 6px 12px 4px 12px;
+    min-height: 22px;
+}
+QPushButton.miniTab:hover {
+    background: rgba(255, 255, 255, 180);
 }
 QPushButton.miniTab[active="true"] {
-    background: rgba(255, 255, 255, 245);
+    background: rgba(255, 255, 255, 240);
     color: #0B1020;
-    border: 2px solid #1F2430;
+    border: 1px solid rgba(0, 0, 0, 70);
     border-bottom: none;
-    padding: 3px 9px 5px 9px;
+    font-weight: 800;
+    padding: 8px 12px 6px 12px;
 }
+/* State-colour stripe sitting on top of each tab (all tabs). Top border
+   thickness expands slightly when active for extra emphasis. */
+QPushButton.miniTab[stateKey="idle"]     { border-top: 3px solid #9AA3B2; }
+QPushButton.miniTab[stateKey="done"]     { border-top: 3px solid #4CD98D; }
+QPushButton.miniTab[stateKey="working"]  { border-top: 3px solid #FFB74D; }
+QPushButton.miniTab[stateKey="input"]    { border-top: 3px solid #3DA1FF; }
+QPushButton.miniTab[stateKey="approval"] { border-top: 3px solid #FF7A00; }
+QPushButton.miniTab[stateKey="error"]    { border-top: 3px solid #8B0000; }
+QPushButton.miniTab[active="true"][stateKey="idle"]     { border-top: 4px solid #9AA3B2; }
+QPushButton.miniTab[active="true"][stateKey="done"]     { border-top: 4px solid #4CD98D; }
+QPushButton.miniTab[active="true"][stateKey="working"]  { border-top: 4px solid #FFB74D; }
+QPushButton.miniTab[active="true"][stateKey="input"]    { border-top: 4px solid #3DA1FF; }
+QPushButton.miniTab[active="true"][stateKey="approval"] { border-top: 4px solid #FF7A00; }
+QPushButton.miniTab[active="true"][stateKey="error"]    { border-top: 4px solid #8B0000; }
+
+/* Playlist / session-picker button on the far left of the tab strip */
+QPushButton#playlistBtn {
+    background: rgba(255, 255, 255, 150);
+    color: #1F2430;
+    border: 1px solid rgba(0, 0, 0, 35);
+    border-bottom: none;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 14px; font-weight: 800;
+    padding: 4px 10px 4px 10px;
+    min-height: 26px;
+}
+QPushButton#playlistBtn:hover { background: rgba(255, 255, 255, 220); }
 
 QPushButton#smallBtn {
     background: transparent; color: #1F2430;
@@ -487,8 +524,9 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
-  <li><b>◀ / ▶ Arrows</b> — Cycle Through Active Sessions. Matches The Size Of The State Circle So The Bottom Row Feels Balanced.</li>
-  <li><b>Notebook Tab Strip</b> — Thin Row Along The Top Of The HUD With One Small Folder-Style Tab Per Active Session. The Active Tab Is Outlined In Black; Click Any Tab To Jump To That Session. Mirrors What The ◀ / ▶ Arrows Do But Gives You The Full List At A Glance.</li>
+  <li><b>◀ / ▶ Arrows</b> — Cycle Through Active Sessions. Size Matches The State Circle So The Bottom Row Feels Balanced.</li>
+  <li><b>Session Tabs (Top Of The Panel)</b> — Browser-Style Tabs Integrated Into The Top Edge Of The Glass Body. Each Tab Carries A 3-Pixel State-Coloured Stripe Along Its Top, So You Can See Every Session's Status At A Glance. The Active Tab Lifts Slightly, Has A Thicker Coloured Stripe, And Blends Into The Body Below. Click Any Tab To Switch. New Sessions Appear As New Tabs Automatically.</li>
+  <li><b>☰ Playlist Button (Far Left Of The Tab Strip)</b> — Opens A Menu Listing Every Active Session With Its Coloured State Dot. A Third Way To Switch (Alongside Tabs And ◀ / ▶). Useful When You Have Many Tabs And Want A Compact Scroll-Able List.</li>
   <li><b>⇣ Commands ▾</b> — Dropdown With /compact, /clear, /cost, /model, /resume. Focuses The Session's Terminal And Types The Command.</li>
   <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
 </ul>
@@ -715,14 +753,24 @@ class BeeperWidget(QMainWindow):
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(8)
 
-        # Notebook-style mini-tab strip: one small tab per active session.
-        # Sits above the main body so you can see all sessions at a glance
-        # and click to jump between them (in addition to the ◀/▶ arrows).
+        # Integrated browser-style tab strip sitting right on top of the
+        # glass body. The ☰ playlist button on the left opens a full session
+        # menu; browsertabs to the right of it take their natural widths
+        # (like Windows Terminal) and grow as sessions are added.
         self.tabbar = QWidget(container)
-        self.tabbar.setFixedHeight(24)
+        self.tabbar.setFixedHeight(32)
+        self.tabbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        self.tabbar_layout.setContentsMargins(4, 0, 4, 0)
+        # Negative top margin pulls the tabs up so they visually merge into
+        # the panel's top edge rather than floating above it.
+        self.tabbar_layout.setContentsMargins(10, -2, 10, 0)
         self.tabbar_layout.setSpacing(2)
+
+        self.btn_playlist = QPushButton("☰", self.tabbar)
+        self.btn_playlist.setObjectName("playlistBtn")
+        self.btn_playlist.setToolTip("Sessions — click to pick")
+        self.btn_playlist.clicked.connect(self._show_playlist_menu)
+        self.tabbar_layout.addWidget(self.btn_playlist)
         self.tabbar_layout.addStretch(1)
         root.addWidget(self.tabbar)
         self._tab_buttons: dict[str, QPushButton] = {}
@@ -913,8 +961,18 @@ class BeeperWidget(QMainWindow):
             return
         self._render_session(s)
 
+    # State mapping used by both the tabs and the action circle.
+    def _state_key(self, s: dict[str, Any]) -> str:
+        if s.get("pending"):     return "approval"
+        state = s.get("state", "snoozing")
+        if state == "awaiting_input": return "input"
+        if state == "working":         return "working"
+        if state == "done":            return "done"
+        if state == "error":           return "error"
+        return "idle"
+
     def _refresh_tabbar(self, sessions: list[dict[str, Any]]) -> None:
-        """Keep notebook-style mini-tabs in sync with the server's session list."""
+        """Keep browser-style tabs in sync with the server session list."""
         current_ids = {s["session_id"] for s in sessions}
         # Drop tabs for gone sessions
         for sid in list(self._tab_buttons.keys()):
@@ -922,7 +980,7 @@ class BeeperWidget(QMainWindow):
                 btn = self._tab_buttons.pop(sid)
                 self.tabbar_layout.removeWidget(btn)
                 btn.deleteLater()
-        # Add new tabs / refresh label+active marker
+        # Add new tabs / refresh label + active marker
         for s in sessions:
             sid = s["session_id"]
             btn = self._tab_buttons.get(sid)
@@ -930,22 +988,46 @@ class BeeperWidget(QMainWindow):
                 btn = QPushButton(self.tabbar)
                 btn.setProperty("class", "miniTab")
                 btn.clicked.connect(lambda _=False, x=sid: self._select_session(x))
-                # Insert before the trailing stretch
+                # Insert before the trailing stretch. Because ☰ is at index 0
+                # and the stretch is last, new tabs land between them.
                 self.tabbar_layout.insertWidget(self.tabbar_layout.count() - 1, btn)
                 self._tab_buttons[sid] = btn
-            label = session_label(s)
-            dot = STATE_COLOR.get(s.get("state", "snoozing"), "#9AA3B2")
-            # Show the coloured state dot + truncated label
-            btn.setText(f"●  {label[:18]}")
-            btn.setStyleSheet(f"QPushButton {{ color: #1F2430; }} QPushButton::first-letter {{ color: {dot}; }}")
-            is_active = sid == self._active_sid
-            btn.setProperty("active", is_active)
+            label = session_label(s)[:22]
+            btn.setText(label)
+            btn.setProperty("stateKey", self._state_key(s))
+            btn.setProperty("active", sid == self._active_sid)
             btn.style().unpolish(btn); btn.style().polish(btn)
             btn.setToolTip(
                 f"session: {sid[:8]}\n"
-                f"state: {s.get('state','?')}\n"
-                f"cwd: {s.get('cwd','')}"
+                f"state:   {s.get('state','?')}\n"
+                f"cwd:     {s.get('cwd','')}\n"
+                f"click to switch"
             )
+
+    def _show_playlist_menu(self) -> None:
+        """Drop-down menu listing every active session. Each row shows a
+        coloured state dot + label + (active) marker. Click to switch."""
+        menu = QMenu(self)
+        if not self._sessions:
+            a = QAction("— No Active Sessions —", self)
+            a.setEnabled(False); menu.addAction(a)
+        for s in self._sessions:
+            sid = s["session_id"]
+            label = session_label(s)[:48]
+            state_key = self._state_key(s)
+            state_color = STATE_COLOR.get(s.get("state", "snoozing"), "#9AA3B2")
+            active_marker = "  ←  active" if sid == self._active_sid else ""
+            # Draw a tiny coloured square as an icon
+            pm = QPixmap(12, 12); pm.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pm); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(QBrush(QColor(state_color))); painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(1, 1, 10, 10); painter.end()
+            act = QAction(QIcon(pm), f"{label}{active_marker}", self)
+            act.triggered.connect(lambda _=False, x=sid: self._select_session(x))
+            menu.addAction(act)
+        menu.exec_(self.btn_playlist.mapToGlobal(
+            QPoint(0, self.btn_playlist.height())
+        ))
 
     def _select_session(self, sid: str) -> None:
         if sid not in {s["session_id"] for s in self._sessions}:
