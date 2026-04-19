@@ -519,44 +519,72 @@ class ApprovalPopup(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(BUTTON_CSS + """
-            QFrame#card {
-                background: rgba(248, 246, 242, 240);
-                border: 1px solid rgba(255, 255, 255, 160);
+            QFrame#popupCard {
+                background: rgba(248, 246, 242, 245);
+                border: 1px solid rgba(0, 0, 0, 40);
                 border-radius: 14px;
             }
-            QLabel#title    { font-size: 13px; font-weight: 700; padding: 6px 8px 0; }
-            QLabel#summary  { color: #FA6B2A; font-size: 11px; padding: 4px 8px; }
-            QLabel#reason   { color: #C23A3A; font-size: 11px; padding: 0 8px 6px; }
-            QLabel#meta     { font-size: 11px; padding: 0 8px; }
+            QLabel#popupTitle   {
+                color: #1F2430; font-family: 'Segoe UI', sans-serif;
+                font-size: 13px; font-weight: 800; padding: 0;
+            }
+            QLabel#popupMeta    {
+                color: #60667A; font-family: 'Segoe UI', sans-serif;
+                font-size: 11px; font-weight: 600; padding: 0;
+            }
+            QLabel#popupSummary {
+                color: #FA6B2A; font-family: Consolas, 'Courier New', monospace;
+                font-size: 11px; padding: 6px 10px;
+                background: rgba(250, 107, 42, 25);
+                border: 1px solid rgba(250, 107, 42, 80);
+                border-radius: 6px;
+            }
+            QLabel#popupReason  {
+                color: #C23A3A; font-family: 'Segoe UI', sans-serif;
+                font-size: 11px; font-style: italic; padding: 0;
+            }
         """)
         self._on_resolve = on_resolve
 
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
-        self.card = QFrame(self); self.card.setObjectName("card")
+        self.card = QFrame(self); self.card.setObjectName("popupCard")
         outer.addWidget(self.card)
 
-        v = QVBoxLayout(self.card); v.setContentsMargins(8, 8, 8, 8); v.setSpacing(4)
-        self.lbl_title = QLabel("Claude wants to run:"); self.lbl_title.setObjectName("title")
-        self.lbl_meta = QLabel(""); self.lbl_meta.setObjectName("meta")
-        self.lbl_summary = QLabel(""); self.lbl_summary.setObjectName("summary"); self.lbl_summary.setWordWrap(True)
-        self.lbl_reason = QLabel(""); self.lbl_reason.setObjectName("reason"); self.lbl_reason.setWordWrap(True)
-        for w in (self.lbl_title, self.lbl_meta, self.lbl_summary, self.lbl_reason):
-            v.addWidget(w)
+        v = QVBoxLayout(self.card)
+        v.setContentsMargins(14, 12, 14, 12)   # generous outer padding
+        v.setSpacing(8)                        # clear gaps between elements
 
-        row = QVBoxLayout(); row.setSpacing(4)
-        btn_once = QPushButton("✓  Allow once"); btn_once.setObjectName("iconBtn")
-        btn_sess = QPushButton("✓✓  Allow for this session"); btn_sess.setObjectName("iconBtn"); btn_sess.setProperty("accent", "green")
-        btn_fwd  = QPushButton("✓✓✓  Allow forever (this category)"); btn_fwd.setObjectName("iconBtn"); btn_fwd.setProperty("accent", "green")
-        btn_deny = QPushButton("✗  Deny"); btn_deny.setObjectName("iconBtn"); btn_deny.setProperty("accent", "red")
+        self.lbl_title = QLabel("Claude Wants To Run:"); self.lbl_title.setObjectName("popupTitle")
+        self.lbl_meta = QLabel(""); self.lbl_meta.setObjectName("popupMeta")
+        self.lbl_summary = QLabel(""); self.lbl_summary.setObjectName("popupSummary"); self.lbl_summary.setWordWrap(True)
+        self.lbl_reason = QLabel(""); self.lbl_reason.setObjectName("popupReason"); self.lbl_reason.setWordWrap(True)
+
+        v.addWidget(self.lbl_title)
+        v.addWidget(self.lbl_meta)
+        v.addWidget(self.lbl_summary)
+        v.addWidget(self.lbl_reason)
+
+        # Divider between info block and action buttons
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("color: rgba(0,0,0,30); background: rgba(0,0,0,30); max-height: 1px;")
+        v.addWidget(divider)
+
+        btn_once = QPushButton("✓  Allow Once");                       btn_once.setObjectName("iconBtn")
+        btn_sess = QPushButton("✓✓  Allow For This Session");          btn_sess.setObjectName("iconBtn"); btn_sess.setProperty("accent", "green")
+        btn_fwd  = QPushButton("✓✓✓  Allow Forever (This Category)");  btn_fwd.setObjectName("iconBtn");  btn_fwd.setProperty("accent", "green")
+        btn_deny = QPushButton("✗  Deny");                              btn_deny.setObjectName("iconBtn"); btn_deny.setProperty("accent", "red")
         btn_once.clicked.connect(lambda: on_resolve("allow", "once"))
         btn_sess.clicked.connect(lambda: on_resolve("allow", "session"))
         btn_fwd.clicked.connect(lambda: on_resolve("allow", "persistent"))
         btn_deny.clicked.connect(lambda: on_resolve("deny", "once"))
         for b in (btn_once, btn_sess, btn_fwd, btn_deny):
-            row.addWidget(b)
-        v.addLayout(row)
+            b.setMinimumHeight(32)
+            v.addWidget(b)
 
-        self.resize(340, 250)
+        # Sized to comfortably hold a ~3-line summary + 4-line reason + 4 buttons
+        # without crowding.
+        self.resize(380, 320)
 
     def show_for(self, pending: dict[str, Any], anchor_geom) -> None:
         self.lbl_meta.setText(f"{pending.get('tool','?')}  ·  {pending.get('category','?')}")
@@ -861,16 +889,15 @@ class BeeperWidget(QMainWindow):
         root.setSpacing(8)
 
         # Integrated browser-style tab strip sitting right on top of the
-        # glass body. Height matches the tabs' natural footprint (one
-        # rowful of content, no extra padding), so there's no wasted
-        # headroom. The ☰ playlist button on the left opens a full
-        # session menu; tabs to the right of it take their natural widths
-        # (like Windows Terminal) and grow as sessions are added.
+        # glass body. Height matches the tabs' natural footprint, so there's
+        # no wasted headroom. The ☰ playlist button is pinned hard-left
+        # (zero left margin) so it hugs the glass edge; tabs flow to its
+        # right at natural widths like Windows Terminal.
         self.tabbar = QWidget(container)
         self.tabbar.setFixedHeight(36)
         self.tabbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        self.tabbar_layout.setContentsMargins(10, 4, 10, 0)
+        self.tabbar_layout.setContentsMargins(0, 4, 10, 0)
         self.tabbar_layout.setSpacing(2)
 
         self.btn_playlist = QPushButton("☰", self.tabbar)
