@@ -171,14 +171,22 @@ def apply_theme(name: str) -> str:
 # a tint over the wallpaper rather than the sole background). Users on
 # older Win10/Win11 21H2 builds see no change.
 
+DWMWA_NCRENDERING_POLICY      = 2
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
-DWMWA_SYSTEMBACKDROP_TYPE = 38
+DWMWA_BORDER_COLOR            = 34   # Win 11 22H2+: outer 1-px window outline
+DWMWA_SYSTEMBACKDROP_TYPE     = 38
+
+DWMNCRP_USEWINDOWSTYLE = 0
+DWMNCRP_DISABLED       = 1
+DWMNCRP_ENABLED        = 2
 
 DWMWCP_DEFAULT    = 0
 DWMWCP_DONOTROUND = 1
 DWMWCP_ROUND      = 2
 DWMWCP_ROUNDSMALL = 3
+
+DWMWA_COLOR_NONE = 0xFFFFFFFE   # sentinel: no outline
 
 DWM_BACKDROPS = {
     "off":     1,   # DWMSBT_NONE
@@ -188,11 +196,7 @@ DWM_BACKDROPS = {
 }
 
 
-def set_dwm_corner(hwnd: int, mode: int = DWMWCP_DONOTROUND) -> bool:
-    """Tell DWM how to round the outer system window corners. We default
-    to DONOTROUND because our Qt GlassPanel paints its own 22-px rounded
-    path — the Win 11 default ~8 px outer rounding clips that path and
-    visually reads as a second overlay."""
+def _dwm_set_int(hwnd: int, attr: int, value: int) -> bool:
     import sys as _sys
     if _sys.platform != "win32" or not hwnd:
         return False
@@ -200,15 +204,57 @@ def set_dwm_corner(hwnd: int, mode: int = DWMWCP_DONOTROUND) -> bool:
         import ctypes
         from ctypes import wintypes
         dwmapi = ctypes.windll.dwmapi
-        v = ctypes.c_int(int(mode))
+        v = ctypes.c_int(int(value))
         hr = dwmapi.DwmSetWindowAttribute(
             wintypes.HWND(hwnd),
-            wintypes.DWORD(DWMWA_WINDOW_CORNER_PREFERENCE),
+            wintypes.DWORD(attr),
             ctypes.byref(v), ctypes.sizeof(v),
         )
         return int(hr) == 0
     except Exception:
         return False
+
+
+def _dwm_set_uint(hwnd: int, attr: int, value: int) -> bool:
+    """BORDER_COLOR wants an unsigned COLORREF; signed c_int would trip
+    on the 0xFFFFFFFE sentinel."""
+    import sys as _sys
+    if _sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        dwmapi = ctypes.windll.dwmapi
+        v = ctypes.c_uint(int(value) & 0xFFFFFFFF)
+        hr = dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            wintypes.DWORD(attr),
+            ctypes.byref(v), ctypes.sizeof(v),
+        )
+        return int(hr) == 0
+    except Exception:
+        return False
+
+
+def set_dwm_corner(hwnd: int, mode: int = DWMWCP_DONOTROUND) -> bool:
+    """Tell DWM how to round the outer system window corners. We default
+    to DONOTROUND because our Qt GlassPanel paints its own 22-px rounded
+    path — the Win 11 default ~8 px outer rounding clips that path and
+    visually reads as a second overlay."""
+    return _dwm_set_int(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, mode)
+
+
+def suppress_win11_outline(hwnd: int) -> dict[str, bool]:
+    """Remove every outer-frame artefact Windows 11 can still draw on a
+    frameless, translucent, always-on-top window:
+    - NC rendering policy: DISABLED (no non-client painting at all)
+    - Border color: NONE sentinel (no 1-px outer outline)
+    Returns a small status dict so a caller can log which attrs
+    actually took (older Windows builds silently reject unknown ones)."""
+    return {
+        "nc_disabled": _dwm_set_int(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED),
+        "border_none": _dwm_set_uint(hwnd, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE),
+    }
 
 
 def set_dwm_backdrop(hwnd: int, name: str, dark: bool = False) -> bool:
@@ -402,10 +448,9 @@ class GlassPanel(QWidget):
         p.setBrush(QBrush(hg))
         p.drawPath(hl_path)
 
-        # Hairline outer border
-        p.setPen(QPen(QColor(*br_rgba), 1))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
+        # (Removed) Hairline outer border — was stacking with Win 11's
+        # own 1-px outer outline to read as a double edge. The rounded
+        # fill path above already defines the visible silhouette.
 
 
 # ==========================================================================
@@ -3019,12 +3064,15 @@ class BeeperWidget(QMainWindow):
             pass
 
     def _apply_dwm_corner(self) -> None:
-        """Disable Windows 11's outer system-window rounding so the Qt
-        GlassPanel's 22-px rounded path is the only corner visible. No-
-        ops silently on Win 10 and non-Windows."""
+        """Kill every outer frame artefact Win 11 can still render on a
+        frameless translucent top-level: outer 8-px system rounding,
+        1-px outer border outline, any non-client painting. The Qt
+        GlassPanel's 22-px rounded path then becomes the ONLY visible
+        edge. No-ops silently on Win 10 and non-Windows."""
         try:
             hwnd = int(self.winId())
             set_dwm_corner(hwnd, DWMWCP_DONOTROUND)
+            suppress_win11_outline(hwnd)
         except Exception:
             pass
 
