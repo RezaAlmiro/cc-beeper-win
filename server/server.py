@@ -185,6 +185,31 @@ TERMINAL_UI_CLASSES = {
 }
 
 
+def _claude_pid_for_pid(pid: int | None) -> int | None:
+    """Walk the ancestor chain looking for a claude.exe / node (Claude Code
+    CLI) process. That's the long-lived PID we use to judge whether the
+    session is still alive."""
+    if not pid:
+        return None
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return None
+    try:
+        p = psutil.Process(pid)
+    except Exception:
+        return None
+    CLAUDE_NAMES = {"claude.exe", "claude-code.exe"}
+    for ancestor in [p] + list(p.parents()):
+        try:
+            name = ancestor.name()
+        except Exception:
+            continue
+        if name in CLAUDE_NAMES:
+            return ancestor.pid
+    return None
+
+
 def _terminal_hwnd_for_pid(pid: int | None) -> int | None:
     if not pid:
         return None
@@ -306,11 +331,15 @@ async def health() -> dict[str, Any]:
 
 
 def _is_session_alive(s: dict[str, Any]) -> bool:
-    """Best-effort check: is the Claude Code process that owns this session
-    still running? Returns True if we can't tell (don't prune on uncertainty)."""
-    pid = s.get("cc_ppid")
+    """Is the Claude Code process that owns this session still running?
+    Use the resolved claude.exe PID (long-lived) — not the hook's shell/ppid
+    which are short-lived bash-c PIDs that vanish between hooks.
+    Returns True if we can't tell (don't prune on uncertainty)."""
+    pid = s.get("cc_claude_pid")
     if not pid:
-        return True  # we never captured a PID — keep, can't disprove
+        # We haven't been able to resolve a claude.exe ancestor yet — keep
+        # the session; we'll sweep once we can actually disprove liveness.
+        return True
     try:
         import psutil  # type: ignore
     except Exception:
@@ -511,6 +540,16 @@ def _apply_hook_metadata(session_id: str, body: dict[str, Any], request: Request
         hwnd = _terminal_hwnd_for_pid(shell_pid) or _terminal_hwnd_for_pid(ppid)
         if hwnd:
             s["terminal_hwnd"] = hwnd
+
+    # Resolve the long-lived claude.exe ancestor PID for liveness checks.
+    # The shell_pid/ppid we get from the hook are ephemeral bash-c PIDs
+    # that die as soon as curl returns — useless for deciding "is this
+    # session still alive a minute from now?". claude.exe lives for the
+    # entire session, so that's what the sweep tracks.
+    if not s.get("cc_claude_pid"):
+        claude_pid = _claude_pid_for_pid(shell_pid) or _claude_pid_for_pid(ppid)
+        if claude_pid:
+            s["cc_claude_pid"] = claude_pid
     return s
 
 
