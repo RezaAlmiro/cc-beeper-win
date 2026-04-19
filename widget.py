@@ -171,11 +171,13 @@ def apply_theme(name: str) -> str:
 # a tint over the wallpaper rather than the sole background). Users on
 # older Win10/Win11 21H2 builds see no change.
 
-DWMWA_NCRENDERING_POLICY      = 2
-DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_NCRENDERING_POLICY       = 2
+DWMWA_USE_IMMERSIVE_DARK_MODE  = 20
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
-DWMWA_BORDER_COLOR            = 34   # Win 11 22H2+: outer 1-px window outline
-DWMWA_SYSTEMBACKDROP_TYPE     = 38
+DWMWA_BORDER_COLOR             = 34   # Win 11 22H2+: outer 1-px window outline
+DWMWA_CAPTION_COLOR            = 35   # Win 11 22H2+: caption / title-bar fill
+DWMWA_TEXT_COLOR               = 36   # Win 11 22H2+: caption text
+DWMWA_SYSTEMBACKDROP_TYPE      = 38
 
 DWMNCRP_USEWINDOWSTYLE = 0
 DWMNCRP_DISABLED       = 1
@@ -248,13 +250,49 @@ def suppress_win11_outline(hwnd: int) -> dict[str, bool]:
     """Remove every outer-frame artefact Windows 11 can still draw on a
     frameless, translucent, always-on-top window:
     - NC rendering policy: DISABLED (no non-client painting at all)
-    - Border color: NONE sentinel (no 1-px outer outline)
-    Returns a small status dict so a caller can log which attrs
-    actually took (older Windows builds silently reject unknown ones)."""
-    return {
-        "nc_disabled": _dwm_set_int(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED),
-        "border_none": _dwm_set_uint(hwnd, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE),
+    - Border color: NONE (no 1-px outer outline)
+    - Caption color: NONE (no ~38-px dark title-bar fill painted BELOW our
+      translucent pixels — this was the real cause of "sharp dark top
+      corners": DWM was compositing an opaque #0C0C0C caption rectangle
+      underneath our rounded glass at the top, visible through the
+      corner alpha=0 zone).
+    - Text color: NONE (caption text, invisible but set for consistency)
+    - Extend frame into client area with negative margins so the frame
+      doesn't reserve a caption band at all.
+    Returns a status dict so a caller can log which attrs took; older
+    Windows builds silently reject unknown attrs and return False."""
+    import sys as _sys
+    import ctypes
+    from ctypes import wintypes
+
+    results = {
+        "nc_disabled":   _dwm_set_int(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED),
+        "border_none":   _dwm_set_uint(hwnd, DWMWA_BORDER_COLOR,  DWMWA_COLOR_NONE),
+        "caption_none":  _dwm_set_uint(hwnd, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE),
+        "text_none":     _dwm_set_uint(hwnd, DWMWA_TEXT_COLOR,    DWMWA_COLOR_NONE),
+        "frame_extend":  False,
     }
+    # DwmExtendFrameIntoClientArea with negative margins -> no caption area
+    # is reserved for drawing the system title bar under us.
+    if _sys.platform == "win32" and hwnd:
+        try:
+            class _MARGINS(ctypes.Structure):
+                _fields_ = [
+                    ("cxLeftWidth", ctypes.c_int),
+                    ("cxRightWidth", ctypes.c_int),
+                    ("cyTopHeight", ctypes.c_int),
+                    ("cyBottomHeight", ctypes.c_int),
+                ]
+            m = _MARGINS(0, 0, 0, 0)   # no glass extension, but call still
+                                        # nullifies prior caption reservation
+            dwmapi = ctypes.windll.dwmapi
+            hr = dwmapi.DwmExtendFrameIntoClientArea(
+                wintypes.HWND(hwnd), ctypes.byref(m)
+            )
+            results["frame_extend"] = (int(hr) == 0)
+        except Exception:
+            pass
+    return results
 
 
 def set_dwm_backdrop(hwnd: int, name: str, dark: bool = False) -> bool:
