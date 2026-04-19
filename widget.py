@@ -35,7 +35,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction, QBrush, QColor, QCursor, QFont, QFontMetrics, QGuiApplication,
     QIcon, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap,
-    QRadialGradient,
+    QRadialGradient, QRegion,
 )
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
@@ -1790,12 +1790,31 @@ class BeeperWidget(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.glass.setGeometry(self.centralWidget().rect())
+        # Clip the whole window to the GlassPanel's rounded silhouette so
+        # child widgets (tab strip, playlist button, popups) can't paint
+        # into the corner triangles. Without this, the tabs' own 10-px
+        # border-radius shows as a second inner edge inside the glass's
+        # 22-px outer curve — the "two overlays" artifact.
+        self._apply_rounded_mask()
         if hasattr(self, "_size_save_timer"):
             self._size_save_timer.start()
         # Re-elide tab labels to their new widths — otherwise a grow-then-
         # shrink keeps the old wider text around till the next session poll.
         if hasattr(self, "_tab_buttons") and self._tab_buttons:
             QTimer.singleShot(0, lambda: self._refresh_tabbar(self._sessions))
+
+    def _apply_rounded_mask(self) -> None:
+        """Build a rounded-rect QRegion matching the GlassPanel's corner
+        radius and apply it as the window mask. Uses 64-segment polygon
+        approximation (smooth at 22 px radius) — Qt's QRegion has no
+        native rounded-rect type."""
+        r = self.rect()
+        if r.width() <= 0 or r.height() <= 0:
+            return
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(r), float(CORNER_RADIUS), float(CORNER_RADIUS))
+        region = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(region)
 
     def _persist_size(self):
         try:
