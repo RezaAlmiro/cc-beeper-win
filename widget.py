@@ -200,7 +200,7 @@ class ActionCircle(QWidget):
         "done":     ("#4CD98D", "#062615", "#2fa35a"),
         "working":  ("#FFB74D", "#2a1d00", "#c78a2a"),
         "input":    ("#3DA1FF", "#001830", "#1a6fbf"),
-        "approval": ("#FFB74D", "#2a1d00", "#c78a2a"),
+        "approval": ("#FF3B3B", "#ffffff", "#8B0000"),   # bright red body + pulsing red halo
         "error":    ("#8B0000", "#ffeaea", "#5a0000"),
     }
 
@@ -252,10 +252,11 @@ class ActionCircle(QWidget):
 
         # ---- Halo for APPROVAL (pulsing red ring outside the circle) ----
         if self._mode == "approval":
-            phase = (math.sin(self._tick * 0.15) + 1) / 2   # 0..1 slow
-            ring_alpha = int(70 + 140 * phase)
-            for i in range(3, 0, -1):
-                pen = QPen(QColor(255, 46, 46, max(20, ring_alpha // (i * 1))), i * 2)
+            # Faster / harder pulse so it reads as urgent
+            phase = (math.sin(self._tick * 0.28) + 1) / 2   # 0..1
+            ring_alpha = int(80 + 170 * phase)
+            for i in range(4, 0, -1):
+                pen = QPen(QColor(255, 46, 46, max(20, ring_alpha // i)), i * 2)
                 p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawEllipse(rect.adjusted(-i * 2, -i * 2, i * 2, i * 2))
 
@@ -342,7 +343,9 @@ QPushButton.miniTab {
     border-bottom-right-radius: 0;
     font-family: 'Segoe UI', sans-serif;
     font-size: 12px; font-weight: 600;
-    padding: 8px 14px 6px 14px;
+    /* Light top padding so the label sits right under the coloured stripe;
+       heavier bottom padding gives the tab its full height. */
+    padding: 3px 14px 12px 14px;
     min-height: 28px;
 }
 QPushButton.miniTab:hover {
@@ -354,7 +357,7 @@ QPushButton.miniTab[active="true"] {
     border: 1px solid rgba(0, 0, 0, 75);
     border-bottom: none;
     font-weight: 800;
-    padding: 10px 14px 6px 14px;
+    padding: 4px 14px 14px 14px;
 }
 /* State-colour stripe on the top edge — 3 px for inactive, 4 px for active.
    Keys mirror the action-circle's state names exactly. */
@@ -543,7 +546,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b style="background:#4CD98D; color:#062615; padding:2px 6px; border-radius:6px">D</b>  ·  <b>Done — Green</b>, Steady. Turn Finished, Ready For Your Next Prompt.</li>
   <li><b style="background:#FFB74D; color:#2a1d00; padding:2px 6px; border-radius:6px">W</b>  ·  <b>Working — Amber</b>, With A Rotating Clock-Sweep Arc Around The Rim. Claude Is Mid-Turn.</li>
   <li><b style="background:#3DA1FF; color:#001830; padding:2px 6px; border-radius:6px">IN</b>  ·  <b>Input Needed — Blue</b>, Flashing Softly. Claude Asked A Follow-Up; Waiting On Your Reply.</li>
-  <li><b style="background:#FFB74D; color:#2a1d00; padding:2px 6px; border:2px solid #ff2e2e; border-radius:6px">A</b>  ·  <b>Approval Pending — Amber Body With A Pulsing Red Halo Ring</b>. A Tool Call Needs Your Yes/No. Click The Circle To Open The 4-Way Ladder.</li>
+  <li><b style="background:#FF3B3B; color:#ffffff; padding:2px 6px; border:2px solid #8B0000; border-radius:6px">A</b>  ·  <b>Approval Pending — Red Body With A Pulsing Red Halo Ring</b>. A Tool Call Needs Your Yes/No. Click The Circle To Open The 4-Way Ladder.</li>
   <li><b style="background:#8B0000; color:#ffeaea; padding:2px 6px; border-radius:6px">E</b>  ·  <b>Error — Dark Red</b>, Fast Hard Flash. The Last Turn Failed.</li>
 </ul>
 
@@ -1077,7 +1080,7 @@ class BeeperWidget(QMainWindow):
         # its own animation based on mode.
         if has_pending:
             self.btn_action.set_state("approval", "A",
-                "Approval Pending — tool wants permission (pulsing red halo, amber body)")
+                "Approval Pending — tool wants permission (red body + pulsing red halo)")
         elif state == "awaiting_input":
             self.btn_action.set_state("input", "IN",
                 "Input Needed — Claude is waiting on your reply (flashing blue)")
