@@ -1070,19 +1070,13 @@ Prompts And Gives You Quick Access To Session-Level Controls.
 </ul>
 <p style="color:#60667A">The Widget Refuses To Send A Slash Command While The State Is Red — The Keystrokes Would Be Mixed Into Claude's Live Input Stream. Wait For Green.</p>
 
-<h3 style="color:#1F2430">Export Session Stats</h3>
-<p style="color:#60667A">At The Bottom Of The Commands Dropdown (Or In The Title Right-Click Menu), <b>Export Session Stats To Txt…</b> Saves A Plain-Text Report For The Currently Selected Tab. The Report Includes:</p>
+<h3 style="color:#1F2430">Data Export (Lives Inside Session Insights)</h3>
+<p style="color:#60667A">All Exporting Happens In The Session Insights Dialog Now — One Surface, Two Formats:</p>
 <ul style="color:#1F2430; line-height:1.6">
-  <li>Session Identity (Name, ID, CWD, First Prompt)</li>
-  <li>Model + Context Window Size</li>
-  <li>Current Context Usage + Remaining</li>
-  <li>Lifetime Token Totals (Input / Output / Cache-Read / Cache-Write / Turns)</li>
-  <li>Derived Economics — Cache-Hit Rate, Output/Input Ratio, Turns-Per-Percent</li>
-  <li>Insights Generated From Your Actual Usage (E.g. "Cache Is Doing Heavy Lifting", "Long-Running Session: 423 Turns")</li>
-  <li>Tips Tailored To The Session: When To /compact, Whether Your Cache Is Warm, Whether To Drop To A Cheaper Model</li>
-  <li>Current CC-Beeper Settings + Your Trust List</li>
+  <li><b>⇣  Export CSV</b> — A Single Spreadsheet-Ready File Covering EVERY Section Of The Dashboard: Summary Windows (1h / 5h / Today / Week / All-Time), Insights, Top Projects, Hour-Of-Day Histogram, Day-Of-Week Histogram, 14-Day Daily Series, Model Mix This Week. Opens Cleanly In Excel / Numbers / Any Spreadsheet.</li>
+  <li><b>📄  Export Text</b> — A Plain-Text Report For The Currently-Active Session: Identity, Model, Context Usage, Lifetime Token Totals, Derived Economics, Auto-Insights, Tailored Tips, Current Cc-Beeper Settings + Trust List.</li>
 </ul>
-<p style="color:#60667A">Saves Anywhere You Like Via A File Dialog. Default Filename Includes The Session Label + Timestamp.</p>
+<p style="color:#60667A">Default Filename Includes A Timestamp. Both Sit In The Footer Row Next To Reload / Close.</p>
 
 <h3 style="color:#1F2430">Token-Saving Tips (Without Hurting Output)</h3>
 <ul style="color:#1F2430; line-height:1.6">
@@ -1106,6 +1100,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Open Anthropic Usage Page</b> Button (Top-Right) — One-Click Launch Of <b>claude.ai/settings/usage</b> For Anthropic's Authoritative Plan-Enforced Percentages. Those Live Behind An Authenticated Session We Can't Read Locally.</li>
 </ul>
 <p style="color:#60667A">A <b>Colour Legend</b> At The Top Of The Dialog Decodes Every Hue You'll See: Regular Bar (Blue), Highlight (Orange Peak / Today / Busiest), Excellent / Healthy (Green), Caution (Amber), Low (Red), Output-Heavy (Blue Badge), Read-Heavy / Marathon (Purple). <b>Rating Badges</b> Follow Cache Hit Rate, Output/Input Ratio, And Session Duration With A Clear Visual Tag. <b>The Dialog Reloads On Every Open</b> — No Stale Numbers — And The <b>Reload</b> Button In The Bottom Row Forces A Manual Re-Scan. Server Caches Parsed Transcripts By Mtime So The Re-Scan Is Near-Instant.</p>
+<p style="color:#60667A"><b>Anthropic Peak Hours</b> Section Shows The System-Level Weekday Peak Window (8:00–14:00 ET Converted To Your Local Time) Where Rate Enforcement Is Stricter; Community Reports 1.3–1.5× Faster Burn On The 5-Hour Window During Peak. Weekends = Off-Peak. <b>This Is Anthropic's Schedule, Not Yours.</b> Your Personal Low-Usage Hours (Formerly Labelled "Off-Peak") Are Now Labelled "Your Quiet Hours" To Keep The Distinction Clear. <b>Tailored Tips</b> At The Bottom Are Prioritised By Your Actual Metrics — Low Cache Hit Rate Triggers A Caching Tip, Heavy Opus Week Triggers A Model-Switch Tip, Long Sessions Trigger A <code>/clear</code> Tip — With Links Back To Anthropic Docs And Community Sources.</p>
 
 <h3 style="color:#1F2430">Sound Cues</h3>
 <p style="color:#60667A">Three Soft Melodic Chimes, Each For A Different State Transition:</p>
@@ -1301,6 +1296,21 @@ class UsageDialog(QDialog):
         outer.addWidget(self._scroll, stretch=1)
 
         btnrow = QHBoxLayout(); btnrow.setSpacing(8)
+        csv_btn  = QPushButton("⇣  Export CSV…"); csv_btn.setObjectName("u_btn")
+        csv_btn.setToolTip(
+            "Export everything visible here as a single CSV:\n"
+            "sessions · projects · hour-of-day histogram · day-of-week\n"
+            "histogram · 14-day daily series.  Opens cleanly in Excel\n"
+            "or any spreadsheet."
+        )
+        csv_btn.clicked.connect(self._export_csv)
+        txt_btn  = QPushButton("📄  Export Text…"); txt_btn.setObjectName("u_btn")
+        txt_btn.setToolTip(
+            "Plain-text report of the currently-selected session: identity,\n"
+            "model, token totals, derived economics, insights, tips."
+        )
+        txt_btn.clicked.connect(self._export_text)
+        btnrow.addWidget(csv_btn); btnrow.addWidget(txt_btn)
         btnrow.addStretch(1)
         reload_btn = QPushButton("↻  Reload"); reload_btn.setObjectName("u_btn")
         reload_btn.clicked.connect(self.refresh)
@@ -1308,6 +1318,17 @@ class UsageDialog(QDialog):
         close_btn.clicked.connect(self.hide)
         btnrow.addWidget(reload_btn); btnrow.addWidget(close_btn)
         outer.addLayout(btnrow)
+
+        # Reference to the parent BeeperWidget for text-report composition.
+        # Set via set_owner() so circular deps are avoided.
+        self._owner = None
+        # Last payload cached so export handlers don't need to re-fetch.
+        self._last_data: dict[str, Any] = {}
+
+    def set_owner(self, owner) -> None:
+        """BeeperWidget hands itself in so Export Text can reuse the
+        existing _build_session_report / session lookup helpers."""
+        self._owner = owner
 
     # ----- rendering ----------------------------------------------------
 
@@ -1364,8 +1385,12 @@ class UsageDialog(QDialog):
             f"{int(all_t.get('sessions',0)):,} sessions ever",
         ))
 
-        # ---- Working patterns (peak / off-peak) ----
-        self._inner_layout.addWidget(self._section_header("When You Work"))
+        # ---- Anthropic Peak / Off-Peak (system-level, not user activity) ----
+        self._inner_layout.addWidget(self._section_header("Anthropic Peak Hours"))
+        self._inner_layout.addWidget(self._anthropic_peak_row())
+
+        # ---- Working patterns (your personal activity pattern) ----
+        self._inner_layout.addWidget(self._section_header("Your Activity Pattern"))
         peak_h = insights.get("peak_hour")
         peak_s = insights.get("peak_hour_share", 0)
         off = insights.get("off_peak_hours") or []
@@ -1374,14 +1399,14 @@ class UsageDialog(QDialog):
         busy_s = insights.get("busiest_dow_share", 0)
         if peak_h is not None:
             self._inner_layout.addWidget(self._insight(
-                f"⏰  Peak Hour: <b>{peak_h:02d}:00–{(peak_h+1)%24:02d}:00</b> "
+                f"⏰  Your Busiest Hour: <b>{peak_h:02d}:00–{(peak_h+1)%24:02d}:00</b> "
                 f"({peak_s*100:.0f}% of your lifetime tokens)"
             ))
         if off:
             off_txt = ", ".join(f"{h:02d}:00" for h in off)
             self._inner_layout.addWidget(self._insight(
-                f"😴  Off-Peak Hours (lowest usage): <b>{off_txt}</b> — "
-                f"good slots for long background tasks"
+                f"😴  Your Quiet Hours: <b>{off_txt}</b> — "
+                f"when <i>you</i> don't typically code (not an Anthropic discount)"
             ))
         if busy_d is not None:
             self._inner_layout.addWidget(self._insight(
@@ -1485,11 +1510,19 @@ class UsageDialog(QDialog):
                     f"  {name:<44}  {tokens:>12,} tk  {turns:>5,} turns  {sessions:>3} sessions"
                 ))
 
+        # ---- Tailored Tips (evidence-backed, targeted by actual data) ----
+        self._inner_layout.addWidget(self._section_header("Tailored Tips"))
+        # Stash numbers for the tip builder.
+        self._last_data = data
+        for tip in self._build_tips(insights, fam_week, data):
+            self._inner_layout.addWidget(self._insight(tip))
+
         # ---- Footer ----
         import datetime as _dt
         stamp = _dt.datetime.fromtimestamp(data.get("generated_at", 0)).strftime("%H:%M:%S")
         foot = QLabel(
             f"Last updated: {stamp}  ·  scanned {data.get('files_scanned', 0)} transcripts.  "
+            f"Reloads every time this window opens.  "
             f"Anthropic's plan-enforced percentages live at "
             f"<a href='https://claude.ai/settings/usage' style='color:#7AA8FF'>claude.ai/settings/usage</a>."
         )
@@ -1590,6 +1623,237 @@ class UsageDialog(QDialog):
             return f"resets in {hours} hr {minutes} min"
         days = hours // 24
         return f"resets {target.strftime('%a %H:%M')}"
+
+    # ----- peak hours / tips builders ----------------------------------
+
+    def _anthropic_peak_row(self) -> QWidget:
+        """Display Anthropic's published weekday peak window (8 AM–2 PM
+        Eastern, where rate enforcement is stricter) in the user's
+        local timezone, plus a brief note about weekends being off-peak.
+        This is system-level — independent of how much the user works."""
+        from datetime import datetime, time, timedelta, timezone
+        try:
+            from zoneinfo import ZoneInfo
+            et = ZoneInfo("America/New_York")
+            # Build the peak window for today in ET, then convert both ends
+            # to the user's local tz so labels are immediately meaningful.
+            today = datetime.now(et).date()
+            start_et = datetime.combine(today, time(8, 0), et)
+            end_et   = datetime.combine(today, time(14, 0), et)
+            start_local = start_et.astimezone()
+            end_local   = end_et.astimezone()
+            local_tz = str(start_local.tzinfo)
+            peak_str = (
+                f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')} "
+                f"local  ·  (8:00–14:00 ET)"
+            )
+            # Are we currently in peak?
+            now_et = datetime.now(et)
+            is_weekday = now_et.weekday() < 5
+            in_peak = is_weekday and (start_et <= now_et <= end_et)
+        except Exception:
+            peak_str = "08:00–14:00 Eastern (weekdays)"
+            in_peak = False
+
+        row = QWidget()
+        lay = QVBoxLayout(row); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(4)
+        status_badge = (self._badge("IN PEAK NOW", "#FF7A7A", "#330707")
+                        if in_peak else
+                        self._badge("CURRENTLY OFF-PEAK", "#4CD98D", "#062615"))
+        lbl1 = QLabel(
+            f"🕘  Peak window (weekdays): <b>{peak_str}</b> &nbsp; {status_badge}"
+        )
+        lbl1.setObjectName("u_insight"); lbl1.setTextFormat(Qt.TextFormat.RichText)
+        lbl1.setWordWrap(True)
+        lbl2 = QLabel(
+            "<span style='color:#A8B0BF'>Anthropic enforces rate limits "
+            "more strictly during peak — community-measured 1.3–1.5× faster "
+            "burn on the 5-hour window. Weekends count as off-peak. "
+            "No published discount, just looser enforcement outside peak.</span>"
+        )
+        lbl2.setObjectName("u_muted"); lbl2.setTextFormat(Qt.TextFormat.RichText)
+        lbl2.setWordWrap(True)
+        lay.addWidget(lbl1); lay.addWidget(lbl2)
+        return row
+
+    def _build_tips(self, insights: dict, fam_week: dict, data: dict) -> list[str]:
+        """Return a ranked list of tip HTML strings, prioritising ones
+        targeted by the user's actual metrics. All tips are backed by
+        Anthropic docs or high-engagement community posts — no made-up
+        advice. Returns at most 7 items."""
+        tips: list[str] = []
+
+        cache_pct = insights.get("cache_hit_pct", 0)
+        oi = insights.get("output_input_ratio", 0)
+        avg_s = insights.get("avg_session_minutes", 0)
+        opus = (fam_week.get("opus") or {})
+        opus_total = opus.get("input", 0) + opus.get("output", 0)
+        week_total = sum(
+            (fam_week.get(f, {}).get("input", 0) + fam_week.get(f, {}).get("output", 0))
+            for f in ("opus", "sonnet", "haiku", "other")
+        )
+        opus_share = opus_total / week_total if week_total else 0.0
+
+        # 1 — Targeted: low cache hit
+        if cache_pct < 70:
+            tips.append(
+                "💾  <b>Batch related edits for better caching.</b>  "
+                "Your cache hit rate is below 70% — cached reads cost ~0.1× a "
+                "fresh read, so grouping edits into one session (same files, "
+                "same prompt prefix) pays directly. "
+                "<a href='https://platform.claude.com/docs/en/build-with-claude/prompt-caching' style='color:#7AA8FF'>Prompt caching docs</a>"
+            )
+        # 2 — Targeted: heavy Opus week
+        if opus_share > 0.6 and week_total > 0:
+            tips.append(
+                f"🧪  <b>Drop to Sonnet for routine edits.</b>  "
+                f"{opus_share*100:.0f}% of this week is Opus; "
+                f"Sonnet handles ~80% of daily coding at ~1/5 the cost. "
+                f"Use <code>/model</code> mid-session. "
+                f"<a href='https://code.claude.com/docs/en/best-practices' style='color:#7AA8FF'>Best practices</a>"
+            )
+        # 3 — Targeted: read-heavy
+        if oi < 5 and oi > 0:
+            tips.append(
+                "📖  <b>You're reading a lot per token generated.</b>  "
+                "Try <code>/compact</code> sooner (around 60% context), and "
+                "batch related questions into one prompt instead of many "
+                "small turns that each re-read the same context."
+            )
+        # 4 — Targeted: long sessions
+        if avg_s > 120:
+            tips.append(
+                "🧹  <b>Long sessions drift off-topic.</b>  "
+                "Your average session is over 2 hours — <code>/clear</code> "
+                "between unrelated tasks. One team reported a 72% bill drop "
+                "from tighter session scoping. "
+                "<a href='https://buildtolaunch.substack.com/p/claude-code-token-optimization' style='color:#7AA8FF'>Source</a>"
+            )
+
+        # Fallbacks — evergreen tips always worth surfacing
+        tips.append(
+            "⏳  <b>Run <code>/compact</code> at ~60% context.</b>  "
+            "Summarises the conversation so far before quality degrades. "
+            "Best right after a milestone (feature complete, bug fixed)."
+        )
+        tips.append(
+            "🗺️  <b>Use Plan Mode before big changes.</b>  "
+            "Keeps exploration (reading files) from polluting the "
+            "execution context. Cuts context bloat dramatically."
+        )
+        tips.append(
+            "🧾  <b>Keep CLAUDE.md lean.</b>  "
+            "Only include rules Claude would fail without. Bloat there "
+            "causes Claude to skim the important bits."
+        )
+        tips.append(
+            "🧑‍🔬  <b>Delegate investigation to subagents.</b>  "
+            "File-reading happens in a separate context; you get a "
+            "summary back without clogging the main conversation."
+        )
+        return tips[:7]
+
+    # ----- exports ------------------------------------------------------
+
+    def _default_export_dir(self) -> str:
+        from pathlib import Path as _P
+        return str(_P.home() / "Documents")
+
+    def _export_csv(self) -> None:
+        """Write a comprehensive CSV covering every section of this
+        dialog: summary windows, sessions, projects, hour histogram,
+        day-of-week histogram, 14-day daily series."""
+        data = self._last_data or {}
+        if not data:
+            QMessageBox.warning(self, "No data", "Reload the dialog first.")
+            return
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        default_name = f"cc-beeper-insights-{ts}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Session Insights — CSV",
+            str(Path(self._default_export_dir()) / default_name),
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            import csv, io
+            buf = io.StringIO()
+            w = csv.writer(buf, lineterminator="\n")
+
+            # Section: summary windows
+            w.writerow(["# Summary windows"])
+            w.writerow(["window", "input", "output", "cache_read", "cache_write", "turns", "sessions"])
+            windows = data.get("windows") or {}
+            for k in ("last_1h", "last_5h", "today", "this_week", "all"):
+                b = windows.get(k) or {}
+                w.writerow([k,
+                    b.get("input", 0), b.get("output", 0),
+                    b.get("cache_read", 0), b.get("cache_write", 0),
+                    b.get("turns", 0), b.get("sessions", 0)])
+            w.writerow([])
+
+            # Section: insights
+            w.writerow(["# Insights"])
+            ins = data.get("insights") or {}
+            for k, v in sorted(ins.items()):
+                w.writerow([k, v])
+            w.writerow([])
+
+            # Section: by-project leaderboard
+            w.writerow(["# Projects (all-time)"])
+            w.writerow(["project", "input", "output", "cache_read", "cache_write", "turns", "sessions"])
+            for row in (data.get("by_project") or []):
+                w.writerow([row.get("project", ""),
+                    row.get("input", 0), row.get("output", 0),
+                    row.get("cache_read", 0), row.get("cache_write", 0),
+                    row.get("turns", 0), row.get("sessions", 0)])
+            w.writerow([])
+
+            # Section: hour-of-day histogram
+            w.writerow(["# Tokens by hour of day (all-time)"])
+            w.writerow(["hour", "tokens"])
+            for i, v in enumerate(data.get("hour_tokens") or []):
+                w.writerow([f"{i:02d}", v])
+            w.writerow([])
+
+            # Section: day-of-week histogram
+            w.writerow(["# Tokens by day of week (all-time)"])
+            w.writerow(["day", "tokens"])
+            for i, v in enumerate(data.get("dow_tokens") or []):
+                w.writerow([["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i], v])
+            w.writerow([])
+
+            # Section: 14-day daily series
+            w.writerow(["# Daily tokens (last 14 days)"])
+            w.writerow(["date", "dow", "tokens"])
+            for d in (data.get("daily_series") or []):
+                w.writerow([d.get("date", ""), d.get("dow", ""), d.get("tokens", 0)])
+            w.writerow([])
+
+            # Section: model family this week
+            w.writerow(["# Model mix (this week)"])
+            w.writerow(["family", "input", "output"])
+            fam = data.get("by_family_week") or {}
+            for f in ("opus", "sonnet", "haiku", "other"):
+                b = fam.get(f) or {}
+                w.writerow([f, b.get("input", 0), b.get("output", 0)])
+
+            Path(path).write_text(buf.getvalue(), encoding="utf-8")
+            QMessageBox.information(self, "Exported",
+                f"Wrote:\n{path}\n\nOpens in Excel / Numbers / any spreadsheet.")
+        except Exception as e:
+            QMessageBox.warning(self, "Export failed", f"Couldn't write file:\n{e}")
+
+    def _export_text(self) -> None:
+        """Plain-text session report for the currently-active session in
+        the parent widget. Reuses BeeperWidget._build_session_report."""
+        if self._owner is None:
+            QMessageBox.warning(self, "Unavailable",
+                "Text export needs the widget context. Reopen from the tray menu.")
+            return
+        self._owner._export_session_stats()
 
     # ----- actions ------------------------------------------------------
 
@@ -1861,10 +2125,9 @@ class BeeperWidget(QMainWindow):
             a = QAction(label, self)
             a.triggered.connect(lambda _=False, c=cmd: self._send_cmd(c))
             slash_menu.addAction(a)
-        slash_menu.addSeparator()
-        export_act = QAction("📄  Export Session Stats To Txt…", self)
-        export_act.triggered.connect(self._export_session_stats)
-        slash_menu.addAction(export_act)
+        # Note: the old "Export Session Stats to Txt" entry was removed
+        # here. Exporting now lives inside Session Insights (CSV + Text
+        # buttons) so users have a single data-export surface.
         self.btn_slash.setMenu(slash_menu)
 
         self.btn_rename.clicked.connect(self._rename_active)
@@ -1900,6 +2163,7 @@ class BeeperWidget(QMainWindow):
         self._popup = ApprovalPopup(self._resolve)
         self._settings = TrustSettings()
         self._usage = UsageDialog()
+        self._usage.set_owner(self)
         self._help = HelpDialog()
         self._strategy_actions: dict[str, QAction] = {}
         self._mode_actions: dict[str, QAction] = {}
@@ -2369,9 +2633,9 @@ class BeeperWidget(QMainWindow):
             a.triggered.connect(lambda _=False, c=cmd, x=sid: self._send_cmd_for(x, c))
             cmd_menu.addAction(a)
 
-        ex = QAction("📄  Export This Session's Stats To Txt…", self)
-        ex.triggered.connect(lambda: self._export_session_stats(sid=sid))
-        menu.addAction(ex)
+        ins = QAction("📊  Session Insights… (exports live here)", self)
+        ins.triggered.connect(self._show_usage)
+        menu.addAction(ins)
 
         menu.addSeparator()
         close = QAction("✗  Close Tab", self)
@@ -2742,9 +3006,10 @@ class BeeperWidget(QMainWindow):
             a = QAction(label, self); a.triggered.connect(lambda _=False, c=cmd: self._send_cmd(c))
             cmd_menu.addAction(a)
         menu.addSeparator()
-        ex = QAction("📄  Export Session Stats To Txt…", self)
-        ex.triggered.connect(self._export_session_stats)
-        menu.addAction(ex)
+        # Export moved into Session Insights (CSV + Text buttons).
+        ins = QAction("📊  Session Insights… (exports live here)", self)
+        ins.triggered.connect(self._show_usage)
+        menu.addAction(ins)
         menu.addSeparator()
         r = QAction("Rename…", self); r.triggered.connect(self._rename_active); menu.addAction(r)
         menu.exec_(self.lbl_title.mapToGlobal(pos))
