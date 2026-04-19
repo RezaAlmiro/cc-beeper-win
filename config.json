@@ -14,8 +14,8 @@
     "safety_net_block_catastrophic": true
   },
   "widget": {
-    "width": 287,
-    "height": 322,
+    "width": 264,
+    "height": 278,
     "corner": "bottom-right",
     "margin": 16,
     "opacity": 0.97,

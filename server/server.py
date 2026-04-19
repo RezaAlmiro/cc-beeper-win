@@ -210,6 +210,73 @@ def _claude_pid_for_pid(pid: int | None) -> int | None:
     return None
 
 
+def _enumerate_terminal_ui_windows() -> list[tuple[int, str, str]]:
+    """All visible top-level windows whose class is a known terminal UI.
+    Returns [(hwnd, class, title)]. Used as a fallback when the process
+    tree doesn't reach a terminal emulator (e.g. Windows Terminal
+    re-parents its shells to explorer.exe, hiding the WT ancestor)."""
+    try:
+        import win32gui  # type: ignore
+    except Exception:
+        return []
+    hits: list[tuple[int, str, str]] = []
+
+    def enum(hwnd: int, _: Any) -> None:
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        try:
+            cls = win32gui.GetClassName(hwnd) or ""
+        except Exception:
+            return
+        if cls not in TERMINAL_UI_CLASSES:
+            return
+        hits.append((hwnd, cls, win32gui.GetWindowText(hwnd) or ""))
+    try:
+        win32gui.EnumWindows(enum, None)
+    except Exception:
+        return []
+    return hits
+
+
+def _terminal_hwnd_by_title(cwd_hint: str, task_hint: str) -> int | None:
+    """Pick a terminal-UI window whose title best matches the session's cwd
+    basename or first-prompt keywords. Returns None if no reasonable match."""
+    windows = _enumerate_terminal_ui_windows()
+    if not windows:
+        return None
+    if len(windows) == 1:
+        return windows[0][0]
+
+    hints: list[str] = []
+    if cwd_hint:
+        base = cwd_hint.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+        if base:
+            hints.append(base)
+    for w in (task_hint or "").split():
+        w = w.strip("/,.:;'\"").lower()
+        if len(w) >= 4:
+            hints.append(w)
+
+    scored: list[tuple[int, int]] = []  # (score, hwnd)
+    for hwnd, _cls, title in windows:
+        lt = title.lower()
+        score = 0
+        # Strong signal: Claude Code sets the WT tab title to "… Claude Code"
+        if "claude code" in lt:
+            score += 20
+        elif "claude" in lt:
+            score += 10
+        for h in hints:
+            if h and h in lt:
+                score += 5
+        scored.append((score, hwnd))
+    scored.sort(reverse=True)
+    best_score, best_hwnd = scored[0]
+    # If no window had any meaningful match, return None so the UI can say
+    # "terminal not found" rather than focusing an unrelated WT tab.
+    return best_hwnd if best_score > 0 else None
+
+
 def _terminal_hwnd_for_pid(pid: int | None) -> int | None:
     if not pid:
         return None
@@ -235,6 +302,8 @@ def _terminal_hwnd_for_pid(pid: int | None) -> int | None:
         if pr is not None:
             candidates.append((pr, ancestor.pid))
     if not candidates:
+        # Process tree didn't reach a terminal — common when WT re-parents
+        # its shells to explorer.exe. Fall back to class-based enumeration.
         return None
     candidates.sort(key=lambda c: c[0])
 
@@ -383,6 +452,21 @@ async def sessions_endpoint() -> dict[str, Any]:
     swept = _sweep_dead_sessions()
     if swept:
         log.info("swept dead sessions: %s", [s[:8] for s in swept])
+
+    # Opportunistic HWND re-resolution: if any live session is missing a
+    # terminal_hwnd, retry via PID walk AND via title-based window match.
+    # Lets click-to-focus / slash-commands recover after a hook that
+    # couldn't resolve the first time.
+    for s in SESSIONS.values():
+        if s.get("terminal_hwnd"):
+            continue
+        h = (
+            _terminal_hwnd_for_pid(s.get("cc_claude_pid"))
+            or _terminal_hwnd_by_title(s.get("cwd", ""), s.get("first_task", ""))
+        )
+        if h:
+            s["terminal_hwnd"] = h
+
     out: list[dict[str, Any]] = []
     for sid, s in SESSIONS.items():
         # auto-revert transient states
@@ -416,6 +500,8 @@ async def sessions_endpoint() -> dict[str, Any]:
             "task": (s.get("task") or "")[:200],
             "first_task": first_task,
             "custom_name": s.get("custom_name", ""),
+            "cc_claude_pid": s.get("cc_claude_pid"),
+            "cc_shell_pid": s.get("cc_shell_pid"),
             "state": s.get("state", "snoozing"),
             "tool": s.get("tool"),
             "category": s.get("category"),
@@ -553,21 +639,40 @@ def _apply_hook_metadata(session_id: str, body: dict[str, Any], request: Request
     if ppid:
         s["cc_ppid"] = ppid
 
-    # Only resolve HWND if we don't have one yet — terminals rarely move.
-    if not s.get("terminal_hwnd"):
-        hwnd = _terminal_hwnd_for_pid(shell_pid) or _terminal_hwnd_for_pid(ppid)
-        if hwnd:
-            s["terminal_hwnd"] = hwnd
-
-    # Resolve the long-lived claude.exe ancestor PID for liveness checks.
-    # The shell_pid/ppid we get from the hook are ephemeral bash-c PIDs
-    # that die as soon as curl returns — useless for deciding "is this
-    # session still alive a minute from now?". claude.exe lives for the
-    # entire session, so that's what the sweep tracks.
+    # Resolve the long-lived claude.exe ancestor PID first — we use it as
+    # a stable seed for any subsequent terminal-HWND re-resolution. The
+    # shell_pid/ppid we get from the hook are ephemeral bash-c PIDs that
+    # die as soon as curl returns, so they're useless for deciding "is
+    # this session still alive a minute from now?". claude.exe lives for
+    # the entire session, so that's what the sweep tracks.
     if not s.get("cc_claude_pid"):
         claude_pid = _claude_pid_for_pid(shell_pid) or _claude_pid_for_pid(ppid)
         if claude_pid:
             s["cc_claude_pid"] = claude_pid
+
+    # Terminal HWND — re-resolve if missing OR if the stored handle no
+    # longer points at a real window (user closed + reopened the tab).
+    hwnd = s.get("terminal_hwnd")
+    if hwnd:
+        try:
+            import win32gui  # type: ignore
+            if not win32gui.IsWindow(int(hwnd)):
+                hwnd = None
+                s.pop("terminal_hwnd", None)
+        except Exception:
+            pass
+    if not hwnd:
+        hwnd = (
+            _terminal_hwnd_for_pid(shell_pid)
+            or _terminal_hwnd_for_pid(ppid)
+            or _terminal_hwnd_for_pid(s.get("cc_claude_pid"))
+            # Final fallback: pick a terminal-class window by title match.
+            # Useful when the shell was reparented to explorer.exe and the
+            # process tree no longer reaches a terminal emulator.
+            or _terminal_hwnd_by_title(s.get("cwd", ""), s.get("first_task", ""))
+        )
+        if hwnd:
+            s["terminal_hwnd"] = hwnd
     return s
 
 
