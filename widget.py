@@ -1779,6 +1779,38 @@ class BeeperWidget(QMainWindow):
             self._pixmap_cache[fname] = QPixmap(str(p)) if p.exists() else QPixmap()
         return self._pixmap_cache[fname]
 
+    def _dpr(self) -> float:
+        """Device pixel ratio of the widget's current screen. Used to
+        render sprites crisp on 150 / 200 % monitors — Qt upscales
+        by ratio automatically, so we need to feed it an image sized
+        at `logical * ratio` physical pixels with the ratio tag set."""
+        try:
+            wh = self.windowHandle()
+            if wh is not None and wh.screen() is not None:
+                return float(wh.screen().devicePixelRatio())
+            scr = QGuiApplication.screenAt(self.frameGeometry().center()) \
+                  or QGuiApplication.primaryScreen()
+            return float(scr.devicePixelRatio()) if scr is not None else 1.0
+        except Exception:
+            return 1.0
+
+    def _sprite_pixmap(self, fname: str, size_logical: int) -> QPixmap:
+        """Return a DPI-aware pixmap sized for the sprite label.
+        Scales to physical pixels, tags the ratio, so Qt renders crisply
+        at any system zoom."""
+        pm = self._load_pixmap(fname)
+        if pm.isNull():
+            return pm
+        dpr = self._dpr()
+        phys = max(1, int(round(size_logical * dpr)))
+        scaled = pm.scaled(
+            phys, phys,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(dpr)
+        return scaled
+
     # Maps our internal state string → (display text, bg, fg) for the badge.
     # "snoozing" (idle) is theme-dependent — resolved at paint time.
     _BADGE_PALETTE = {
@@ -2072,9 +2104,10 @@ class BeeperWidget(QMainWindow):
         self.lbl_meta.setText("Open A Claude Code Session And Its Tab Will Appear Here")
         self.ticker.setText("")
         self.btn_action.set_state("idle", "I", "Idle — No Active Sessions")
-        pm = self._load_pixmap("snoozing.png")
+        sprite_px = 36 if self._compact_mode else 64
+        pm = self._sprite_pixmap("snoozing.png", sprite_px)
         if not pm.isNull():
-            self.sprite.setPixmap(pm.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+            self.sprite.setPixmap(pm)
 
 
     def _render_session(self, s):
@@ -2143,12 +2176,12 @@ class BeeperWidget(QMainWindow):
             f"Cache {fmt_tokens(stats.get('total_cache_read', 0))}"
         )
 
-        # Sprite
+        # Sprite (DPI-aware)
         fname = STATE_TO_SPRITE.get(state, "snoozing.png")
-        pm = self._load_pixmap(fname)
+        sprite_px = 36 if self._compact_mode else 64
+        pm = self._sprite_pixmap(fname, sprite_px)
         if not pm.isNull():
-            scaled = pm.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-            self.sprite.setPixmap(scaled)
+            self.sprite.setPixmap(pm)
 
         if has_pending and self._popup.isVisible():
             self._popup.show_for(pending[0], self.frameGeometry())

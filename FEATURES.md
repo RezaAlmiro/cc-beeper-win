@@ -197,8 +197,12 @@ before building.
   was unplugged, and to `_dock_to_corner` if no screen contains it.
   Position is clamped within the target screen so a resolution change
   never spawns off-screen.
-- **DPI-aware scaling** — currently scales by OS default; could
-  fine-tune for 200 %+ monitors
+- ~~**DPI-aware scaling**~~ — **shipped.** Sprites are now rendered
+  at `logical_px × devicePixelRatio` physical pixels with the
+  devicePixelRatio tag set, so they stay crisp on 125 / 150 / 200 %
+  monitors instead of Qt upscaling a 64-pixel image to the physical
+  target (which blurs). Picked up automatically when the widget
+  moves between monitors with different DPIs (re-queried each tick).
 
 ### Feature depth
 - **Cost tracking** — per-session dollar estimate using token counts ×
