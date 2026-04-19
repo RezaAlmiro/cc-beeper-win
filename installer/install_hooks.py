@@ -22,6 +22,7 @@ SETTINGS = Path.home() / ".claude" / "settings.json"
 MARKER = "cc-beeper-win"
 
 EVENTS = [
+    ("SessionStart", "sessionstart"),
     ("UserPromptSubmit", "userpromptsubmit"),
     ("PreToolUse", "pretooluse"),
     ("PostToolUse", "posttooluse"),

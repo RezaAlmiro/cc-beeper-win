@@ -831,6 +831,22 @@ async def stop(request: Request) -> JSONResponse:
     return JSONResponse({})
 
 
+@app.post("/sessionstart")
+async def session_start(request: Request) -> JSONResponse:
+    """Claude Code fires SessionStart right after `claude` boots, before
+    the user types anything. Register the tab immediately so the widget
+    shows the session the moment CC is open, not only after the first
+    prompt."""
+    body = await safe_json(request)
+    session_id = str(body.get("session_id") or "unknown")
+    s = _apply_hook_metadata(session_id, body, request)
+    # Idle/ready state — Claude is booted and waiting for your first prompt.
+    _set_state(session_id, "snoozing",
+               message="Ready — waiting for first prompt")
+    log.info("SessionStart session=%s cwd=%s", session_id[:8], s.get("cwd", ""))
+    return JSONResponse({})
+
+
 @app.post("/sessionend")
 async def session_end(request: Request) -> JSONResponse:
     """Claude Code fires SessionEnd on a clean /exit or equivalent.
