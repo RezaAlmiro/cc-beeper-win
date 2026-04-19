@@ -412,10 +412,9 @@ QPushButton.miniTab {
     border-bottom-right-radius: 0;
     font-family: 'Segoe UI', sans-serif;
     font-size: 12px; font-weight: 600;
-    /* Light top padding so the label sits right under the coloured stripe;
-       heavier bottom padding gives the tab its full height. */
-    padding: 3px 14px 12px 14px;
+    padding: 3px 10px 12px 10px;
     min-height: 28px;
+    min-width: 40px;
 }
 QPushButton.miniTab:hover {
     background: rgba(255, 255, 255, 180);
@@ -426,7 +425,7 @@ QPushButton.miniTab[active="true"] {
     border: 1px solid rgba(0, 0, 0, 75);
     border-bottom: none;
     font-weight: 800;
-    padding: 4px 14px 14px 14px;
+    padding: 4px 10px 14px 10px;
 }
 /* State-colour stripe on the top edge — 3 px for inactive, 4 px for active.
    Keys mirror the action-circle's state names exactly. */
@@ -444,7 +443,8 @@ QPushButton.miniTab[active="true"][stateKey="approval"] { border-top: 4px solid 
 QPushButton.miniTab[active="true"][stateKey="error"]    { border-top: 4px solid #8B0000; }
 
 /* Playlist / session-picker button on the far left of the tab strip.
-   Same visual weight as a tab so the strip reads as one continuous row. */
+   Fixed narrow width so it doesn't steal space from the tabs; same
+   visual weight as a tab so the strip reads as one continuous row. */
 QPushButton#playlistBtn {
     background: rgba(255, 255, 255, 150);
     color: #1F2430;
@@ -455,10 +455,10 @@ QPushButton#playlistBtn {
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     font-family: 'Segoe UI', sans-serif;
-    font-size: 15px; font-weight: 800;
-    padding: 6px 12px;
+    font-size: 14px; font-weight: 800;
+    padding: 6px 6px;
     min-height: 28px;
-    min-width: 30px;
+    min-width: 26px; max-width: 28px;
 }
 QPushButton#playlistBtn:hover { background: rgba(255, 255, 255, 220); }
 
@@ -882,22 +882,23 @@ class BeeperWidget(QMainWindow):
         self.glass.setGraphicsEffect(shadow)
 
         # ---------------- Foreground layout ----------------
-        # Zero top margin: tabs sit flush against the glass's top edge so
-        # there's no dead "headroom" strip of glass above the tabs.
+        # Root has NO margins: the tab strip hugs the glass top + left
+        # edges (its own inner margins handle spacing). The main body is
+        # wrapped in a separate inset container that keeps the generous
+        # 16 px left/right gutters for sprite / meter / buttons.
         root = QVBoxLayout(container)
-        root.setContentsMargins(16, 0, 16, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         # Integrated browser-style tab strip sitting right on top of the
-        # glass body. Height matches the tabs' natural footprint, so there's
-        # no wasted headroom. The ☰ playlist button is pinned hard-left
-        # (zero left margin) so it hugs the glass edge; tabs flow to its
-        # right at natural widths like Windows Terminal.
+        # glass body. The ☰ playlist button is pinned hard-left (only a
+        # thin 2 px inset so the border doesn't touch the glass rim);
+        # tabs after it share the remaining width equally via stretch=1.
         self.tabbar = QWidget(container)
         self.tabbar.setFixedHeight(36)
         self.tabbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        self.tabbar_layout.setContentsMargins(0, 4, 10, 0)
+        self.tabbar_layout.setContentsMargins(2, 4, 6, 0)
         self.tabbar_layout.setSpacing(2)
 
         self.btn_playlist = QPushButton("☰", self.tabbar)
@@ -905,9 +906,20 @@ class BeeperWidget(QMainWindow):
         self.btn_playlist.setToolTip("Sessions — click to pick")
         self.btn_playlist.clicked.connect(self._show_playlist_menu)
         self.tabbar_layout.addWidget(self.btn_playlist)
-        self.tabbar_layout.addStretch(1)
+        # NO trailing stretch — tabs themselves carry stretch=1 so they
+        # divide the remaining width equally, shrinking as more sessions
+        # open (Windows Terminal behaviour).
         root.addWidget(self.tabbar)
         self._tab_buttons: dict[str, QPushButton] = {}
+
+        # Inset container for everything below the tab strip. This is
+        # where the generous 16 px side gutters live.
+        body_wrap = QWidget(container)
+        body_wrap.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        root.addWidget(body_wrap, stretch=1)
+        root = QVBoxLayout(body_wrap)
+        root.setContentsMargins(16, 4, 16, 12)
+        root.setSpacing(8)
 
         # Top row: sprite + title block + state dot
         top = QHBoxLayout(); top.setSpacing(12)
@@ -1068,6 +1080,10 @@ class BeeperWidget(QMainWindow):
         self.glass.setGeometry(self.centralWidget().rect())
         if hasattr(self, "_size_save_timer"):
             self._size_save_timer.start()
+        # Re-elide tab labels to their new widths — otherwise a grow-then-
+        # shrink keeps the old wider text around till the next session poll.
+        if hasattr(self, "_tab_buttons") and self._tab_buttons:
+            QTimer.singleShot(0, lambda: self._refresh_tabbar(self._sessions))
 
     def _persist_size(self):
         try:
@@ -1207,25 +1223,38 @@ class BeeperWidget(QMainWindow):
             if btn is None:
                 btn = QPushButton(self.tabbar)
                 btn.setProperty("class", "miniTab")
+                # Expanding size policy + stretch=1 in the layout below
+                # → every tab takes an equal slice of the strip's width.
+                btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
                 btn.clicked.connect(lambda _=False, x=sid: self._select_session(x))
-                # Right-click → per-tab menu (rename / close).
                 btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 btn.customContextMenuRequested.connect(
                     lambda pos, x=sid: self._tab_context_menu(x, pos)
                 )
-                # Insert before the trailing stretch. Because ☰ is at index 0
-                # and the stretch is last, new tabs land between them.
-                self.tabbar_layout.insertWidget(self.tabbar_layout.count() - 1, btn)
+                # No trailing stretch in the layout — append at the end
+                # with stretch=1 so remaining space is split equally
+                # across all tabs.
+                self.tabbar_layout.addWidget(btn, 1)
                 self._tab_buttons[sid] = btn
-            label = session_label(s)[:22]
-            btn.setText(label)
             btn.setProperty("stateKey", self._state_key(s))
             btn.setProperty("active", sid == self._active_sid)
             btn.style().unpolish(btn); btn.style().polish(btn)
+            # Elide the label to whatever width this tab has been
+            # allocated right now, so long session names don't spill and
+            # short ones don't look lost in whitespace.
+            full_label = session_label(s)
+            try:
+                from PySide6.QtGui import QFontMetrics
+                fm = QFontMetrics(btn.font())
+                inner_w = max(28, btn.width() - 28)  # leave room for padding + border
+                btn.setText(fm.elidedText(full_label, Qt.TextElideMode.ElideRight, inner_w))
+            except Exception:
+                btn.setText(full_label[:22])
             btn.setToolTip(
                 f"session: {sid[:8]}\n"
                 f"state:   {s.get('state','?')}\n"
                 f"cwd:     {s.get('cwd','')}\n"
+                f"topic:   {full_label[:200]}\n"
                 f"click to switch"
             )
 
