@@ -143,26 +143,31 @@ def _synth_chime(path: Path, notes: list[tuple[float, float, float]],
         w.writeframes(bytes(frames))
 
 
-# Two melodic cue patterns. Both resolve to E5 so they're consonant if one
-# plays just after the other.
-#   Approve → E5 → C5  (attention-getting ding-dong, descending)
-#   Input   → A4 → C#5 → E5  (rising question intonation, friendlier)
+# Three melodic cue patterns. All share the E5/G5 shelf so consecutive
+# cues feel harmonically consistent.
+#   Approve → E5 → C5            (descending ding-dong, attention)
+#   Input   → A4 → C#5 → E5      (rising question intonation, gentle)
+#   Done    → C5 → E5 → G5       (rising C-major triad, resolved "complete")
 APPROVE_NOTES = [(659.25, 0.22, 1.0), (523.25, 0.34, 0.9)]
 INPUT_NOTES   = [(440.00, 0.14, 0.8), (554.37, 0.14, 0.85), (659.25, 0.26, 0.9)]
+DONE_NOTES    = [(523.25, 0.11, 0.75), (659.25, 0.11, 0.8), (783.99, 0.34, 0.9)]
 
 
 def ensure_sounds() -> dict[str, Path]:
-    """Render the two WAVs into ASSETS/sounds on first run. Returns
-    {'approve': path, 'input': path}."""
+    """Render the three WAVs into ASSETS/sounds on first run. Returns
+    {'approve': path, 'input': path, 'done': path}."""
     out = {
         "approve": SOUNDS_DIR / "approve.wav",
         "input":   SOUNDS_DIR / "input.wav",
+        "done":    SOUNDS_DIR / "done.wav",
     }
     try:
         if not out["approve"].exists():
             _synth_chime(out["approve"], APPROVE_NOTES)
         if not out["input"].exists():
             _synth_chime(out["input"], INPUT_NOTES)
+        if not out["done"].exists():
+            _synth_chime(out["done"], DONE_NOTES)
     except Exception:
         pass
     return out
@@ -688,12 +693,13 @@ Prompts And Gives You Quick Access To Session-Level Controls.
 </ul>
 
 <h3 style="color:#1F2430">Sound Cues</h3>
-<p style="color:#60667A">Two Soft Melodic Chimes Play When A Session Transitions Into A State That Needs You:</p>
+<p style="color:#60667A">Three Soft Melodic Chimes, Each For A Different State Transition:</p>
 <ul style="color:#1F2430; line-height:1.6">
-  <li><b>Approve</b> — A Two-Note Descending Ding-Dong (E5 → C5). Plays Once When A Tool Permission Becomes Pending. Meant To Catch Your Ear Without Alarming.</li>
-  <li><b>Input</b> — A Three-Note Rising Arpeggio (A4 → C♯5 → E5). Plays Once When Claude Asks You A Follow-Up Question. Softer And More "Question-Shaped" Than Approve.</li>
+  <li><b>Approve</b> — A Two-Note Descending Ding-Dong (E5 → C5). Plays When A Tool Permission Becomes Pending. Attention-Getting Without Alarming.</li>
+  <li><b>Input</b> — A Three-Note Rising Arpeggio (A4 → C♯5 → E5). Plays When Claude Asks You A Follow-Up Question. Softer And "Question-Shaped".</li>
+  <li><b>Done</b> — A Three-Note Rising C-Major Triad (C5 → E5 → G5). Plays When A Turn Completes. Satisfying, Conclusive.</li>
 </ul>
-<p style="color:#60667A">Sounds Are Auto-Generated On First Run (Bell/Chime Synthesis, Saved To <b>assets/sounds/</b>) And Played Via Qt's Non-Blocking Audio. Toggle Via Right-Click → <b>Sound Cues</b>. Setting Persists. Throttled Per Session So You Won't Get Spammed If A State Flips Rapidly.</p>
+<p style="color:#60667A">Sounds Are Auto-Generated On First Run (Bell/Chime Synthesis, Saved To <b>assets/sounds/</b>) And Played Via Qt's Non-Blocking Audio. Toggle Via Right-Click → <b>Sound Cues</b>. Setting Persists. Each Cue Is Throttled Per Session So You Won't Get Spammed If A State Flips Rapidly, And Done Doesn't Fire When A Session First Registers — Only When A Real Turn Finishes.</p>
 
 <h3 style="color:#1F2430">Move, Resize, Relaunch</h3>
 <ul style="color:#1F2430; line-height:1.6">
@@ -1128,6 +1134,10 @@ class BeeperWidget(QMainWindow):
                 cue = "approve"
             elif key == "input" and prev != "input":
                 cue = "input"
+            elif key == "done" and prev not in (None, "done"):
+                # Only ping Done when a real turn finishes, not on first
+                # registration (prev==None means we just saw this session).
+                cue = "done"
             if cue:
                 last_t = self._sound_last_time.get(sid + ":" + cue, 0)
                 if now - last_t >= SOUND_COOLDOWN_S:
