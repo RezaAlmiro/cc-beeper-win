@@ -95,11 +95,42 @@ per-session. Right-click → **Sound Cues** to toggle.
 
 ### Glass aesthetic, fully tunable
 
-Translucent warm-white panel with rounded corners, subtle top-edge
-highlight, soft drop shadow. Right-click anywhere on the widget for the
-full menu: Strategy / Mode / **Opacity** (60-100 % presets + custom
-slider) / Sound Cues / Help / Manage Trust / Quit. **Drag any edge or
-corner** to resize; size persists across restarts.
+Translucent panel with rounded corners. Right-click anywhere for the full
+menu: Strategy / Mode / **Opacity** (60–100 % presets + custom slider) /
+**Theme** (Light / Dark) / **Backdrop** (Off / Mica / Acrylic / Tabbed —
+Win 11 22H2+) / **Compact Mode** (72-px single-row heartbeat view) /
+Sound Cues / Session Insights / Help / Manage Trust / Quit. **Drag any
+edge or corner** to resize; size persists across restarts.
+
+### Themes
+
+**Light** (warm glass, default) and **Dark** (deep glass). Live swap, no
+restart. Persists in `config.json` under `widget.theme`.
+
+### Compact mode
+
+72-px single-row view: sprite + title + state badge + ticker. Hides the
+tab strip, context meter, token line, and bottom buttons. Expanded
+height is remembered so toggling back restores your full layout.
+
+### True backdrop blur (Win 11 22H2+, opt-in)
+
+Right-click → **Backdrop** → Mica / Acrylic / Tabbed Mica. Calls
+`DwmSetWindowAttribute` directly via ctypes. Silently no-ops on older
+Windows. Off by default.
+
+### Multi-monitor memory
+
+Position + screen name saved on every drag. Widget reappears on the
+same monitor across restarts. Falls back to a screen whose geometry
+contains the remembered point, then to `_dock_to_corner` — never
+spawns off-screen if a monitor is unplugged or resolution changes.
+
+### Custom sprite pack
+
+Drop 64 × 64 PNGs into `assets/custom/` using the bundled filenames to
+override the pet-bedroom sprites. Missing files fall back to bundled.
+Folder is gitignored — your pack stays local.
 
 ### Strategy × Mode
 
@@ -233,7 +264,13 @@ safe. Relevant knobs (valid JSON, comments here are for docs only):
     "corner": "bottom-right",
     "margin": 16,
     "opacity_pct": 95,
-    "sound_enabled": true
+    "sound_enabled": true,
+    "theme": "light",
+    "compact": false,
+    "dwm_backdrop": "off",
+    "x": 1200,
+    "y": 820,
+    "screen": "\\\\.\\DISPLAY1"
   }
 }
 ```
@@ -242,30 +279,15 @@ safe. Relevant knobs (valid JSON, comments here are for docs only):
 - `mode` — `strict` / `relaxed` / `trusted` / `yolo`
 - `widget.opacity_pct` — 20–100 (also settable via right-click → Opacity)
 - `widget.sound_enabled` — mute/unmute the chimes
+- `widget.theme` — `light` or `dark` (right-click → Theme)
+- `widget.compact` — `true` collapses to 72-px heartbeat view
+- `widget.dwm_backdrop` — `off` / `mica` / `acrylic` / `tabbed` (Win 11 22H2+)
+- `widget.x` / `widget.y` / `widget.screen` — auto-saved on drag; drives multi-monitor restore
 - Anything you change via the right-click menu is written back here
 
 Your approved "allow forever" categories live in `trust.json` (repo
 ships empty). Session-scoped approvals stay in RAM only. Delete
 `trust.json` to wipe persistent trust.
-
-### Custom sprite pack
-
-Drop your own 64 × 64 PNGs into `assets/custom/` using the same
-filenames as the bundled ones — the widget picks them up on next
-launch, falling back to the bundled sprite for anything you
-haven't overridden. Filenames to match:
-
-```
-assets/custom/snoozing.png   # idle
-assets/custom/working.png    # mid-turn
-assets/custom/done.png       # turn complete
-assets/custom/input.png      # follow-up question
-assets/custom/allow.png      # approval pending
-assets/custom/error.png      # last turn failed
-assets/custom/listening.png  # voice / listening state
-```
-
-The folder is gitignored — your custom pack stays local.
 
 ## Architecture
 

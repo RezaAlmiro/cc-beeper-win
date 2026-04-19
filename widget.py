@@ -1027,10 +1027,36 @@ Prompts And Gives You Quick Access To Session-Level Controls.
     </ul>
   </li>
   <li><b>Opacity</b> — Presets 60 / 75 / 85 / 95 / 100 % Or Custom Slider. Persists Across Restarts.</li>
+  <li><b>Theme</b> — <b>Light</b> (Warm Glass, Default) Or <b>Dark</b> (Deep Glass). Swaps The Whole Widget Chrome Live; No Restart Needed. Persists In config.json.</li>
+  <li><b>Backdrop</b> — Windows 11 22H2+ Only. <b>Off</b> (Default, Fake-Glass Gradient), <b>Mica</b>, <b>Acrylic</b>, Or <b>Tabbed Mica</b>. Calls DWM Directly Via ctypes; Silently No-Ops On Older Windows.</li>
+  <li><b>Compact Mode</b> — Collapses The Widget To A 72-Px Single Row (Sprite + Title + State Badge + Ticker). Hides Tabs, Context Meter, Token Line, Bottom Buttons. Toggle Back To Restore Full Height. Good For "Heartbeat Only" When Real Estate Is Tight.</li>
+  <li><b>Sound Cues</b> — Toggle The Three Melodic Chimes (Approve / Input / Done).</li>
   <li><b>Help</b> — This Dialog.</li>
+  <li><b>Session Insights</b> — Dark-Mode Analytics Dashboard.</li>
   <li><b>Manage Trust</b> — View And Remove Any "Allow Forever" Or Session-Scoped Categories.</li>
   <li><b>Clear Session Trust</b> — Forget Every Session-Only Approval Immediately.</li>
   <li><b>Quit Widget</b> — Closes The Widget Process. The Hook Server Keeps Running So Your Claude Sessions Are Unaffected.</li>
+</ul>
+
+<h3 style="color:#1F2430">Custom Sprite Pack</h3>
+<p style="color:#60667A">Want Your Own Pet Bedroom? Drop 64&nbsp;×&nbsp;64 Png Files Into <b>assets/custom/</b> Using The Bundled Filenames:</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><code>snoozing.png</code> — Idle</li>
+  <li><code>working.png</code> — Mid-Turn</li>
+  <li><code>done.png</code> — Turn Complete</li>
+  <li><code>input.png</code> — Follow-Up Question</li>
+  <li><code>allow.png</code> — Approval Pending</li>
+  <li><code>error.png</code> — Last Turn Failed</li>
+  <li><code>listening.png</code> — Voice / Listening State</li>
+</ul>
+<p style="color:#60667A">Any File You Don't Provide Falls Back To The Bundled Sprite. The Custom Folder Is Gitignored — Your Pack Stays Local.</p>
+
+<h3 style="color:#1F2430">Under-The-Hood Polish</h3>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Multi-Monitor Memory</b> — Position + Screen Name Saved On Every Drag; Widget Reappears On The Same Monitor Next Launch. Falls Back Gracefully If The Monitor Is Unplugged.</li>
+  <li><b>DPI-Aware Sprites</b> — Rendered At <code>Logical × DevicePixelRatio</code> Physical Pixels So They Stay Crisp On 125 / 150 / 200 % Monitors.</li>
+  <li><b>Sprite Crossfade</b> — 150 Ms Opacity Fade On Real State Changes; No Jarring Swap.</li>
+  <li><b>Smooth Ticker Stream</b> — 60 Fps, Time-Based Step, Sub-Pixel Positioning, Scroll Position Preserved Across Text Updates So The Ribbon Flows Continuously.</li>
 </ul>
 
 <h3 style="color:#1F2430">Slash Commands (Token Hygiene)</h3>
