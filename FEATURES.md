@@ -175,8 +175,12 @@ before building.
 - **Click the ticker** to pause / scroll-to-history / copy the current line
 
 ### Visual / UX
-- **True backdrop blur** via Windows 11 DWM acrylic or mica — right now
-  it's a semi-opaque fake; real blur would show the wallpaper through
+- ~~**True backdrop blur**~~ — **shipped, off by default.** Right-click
+  → **Backdrop** → Off / Mica / Acrylic / Tabbed Mica. Calls
+  `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` via ctypes; silently
+  no-ops on Win 10 and Win 11 < 22H2 (tooltip flags it). Whether the
+  blur shows visibly through a Qt translucent window depends on build;
+  off-by-default preserves the old behaviour for everyone.
 - ~~**Dark-glass theme**~~ — **shipped.** Right-click → Theme → Light /
   Dark. Palette swap is live (no restart) and persists in `config.json`.
   Scope: main widget chrome (glass, text, tabs, ticker, context bar,

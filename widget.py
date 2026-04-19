@@ -158,6 +158,60 @@ def apply_theme(name: str) -> str:
     return "dark" if src is DARK_THEME else "light"
 
 
+# --------------------------------------------------------------------------
+# Windows DWM backdrop — Mica / Acrylic / Tabbed on Win 11 22H2+
+# --------------------------------------------------------------------------
+# DwmSetWindowAttribute with DWMWA_SYSTEMBACKDROP_TYPE tells the compositor
+# to apply a real blur behind the window. Requires Windows 11 build 22621+
+# (22H2). Older builds accept the call but silently ignore it. We feature-
+# detect by return code and keep the "fake glass" gradient as a fallback.
+#
+# Off by default — enabling affects how the glass looks (DWM backdrops
+# paint behind a transparent window, so the widget's own bg tint becomes
+# a tint over the wallpaper rather than the sole background). Users on
+# older Win10/Win11 21H2 builds see no change.
+
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_SYSTEMBACKDROP_TYPE = 38
+
+DWM_BACKDROPS = {
+    "off":     1,   # DWMSBT_NONE
+    "mica":    2,   # DWMSBT_MAINWINDOW
+    "acrylic": 3,   # DWMSBT_TRANSIENTWINDOW
+    "tabbed":  4,   # DWMSBT_TABBEDWINDOW
+}
+
+
+def set_dwm_backdrop(hwnd: int, name: str, dark: bool = False) -> bool:
+    """Apply a DWM system backdrop to an HWND. Returns True if the call
+    succeeded (hr == 0). Silently no-ops on non-Windows."""
+    import sys as _sys
+    if _sys.platform != "win32" or not hwnd:
+        return False
+    backdrop = DWM_BACKDROPS.get((name or "off").lower(), 1)
+    try:
+        import ctypes
+        from ctypes import wintypes
+        dwmapi = ctypes.windll.dwmapi
+        # Immersive dark-mode title (harmless on frameless windows, but
+        # keeps the non-client area consistent if we ever show a border).
+        v = ctypes.c_int(1 if dark else 0)
+        dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            wintypes.DWORD(DWMWA_USE_IMMERSIVE_DARK_MODE),
+            ctypes.byref(v), ctypes.sizeof(v),
+        )
+        v = ctypes.c_int(backdrop)
+        hr = dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            wintypes.DWORD(DWMWA_SYSTEMBACKDROP_TYPE),
+            ctypes.byref(v), ctypes.sizeof(v),
+        )
+        return int(hr) == 0
+    except Exception:
+        return False
+
+
 def load_cfg() -> dict[str, Any]:
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -1437,6 +1491,10 @@ class BeeperWidget(QMainWindow):
         # pick up the correct palette at init time.
         self._theme_name = apply_theme(w_cfg.get("theme", "light"))
         self._theme_actions: dict[str, QAction] = {}
+        self._backdrop_name = str(w_cfg.get("dwm_backdrop", "off")).lower()
+        if self._backdrop_name not in DWM_BACKDROPS:
+            self._backdrop_name = "off"
+        self._backdrop_actions: dict[str, QAction] = {}
         self._compact_mode = bool(w_cfg.get("compact", False))
         # Height in expanded mode (restored when compact is turned off).
         # Bumped to at least current configured height so users who've
@@ -1681,6 +1739,12 @@ class BeeperWidget(QMainWindow):
         # wired. No-op if the user launched in expanded mode.
         if self._compact_mode:
             self._set_compact(True, save=False)
+
+        # Apply DWM backdrop if configured. Deferred via singleShot so the
+        # HWND is real (Qt allocates it at first show) before the ctypes
+        # call runs.
+        if self._backdrop_name != "off":
+            QTimer.singleShot(0, lambda: self._apply_backdrop(self._backdrop_name, save=False))
 
     # -- geometry ---------------------------------------------------------
 
@@ -2815,6 +2879,22 @@ class BeeperWidget(QMainWindow):
             theme_menu.addAction(a)
             self._theme_actions[tname] = a
 
+        # DWM Backdrop submenu (Win 11 22H2+). Off by default — the call
+        # silently no-ops on older Windows builds; the fake glass stays.
+        backdrop_menu = menu.addMenu(f"Backdrop:  {self._backdrop_name.capitalize()}")
+        self._backdrop_menu = backdrop_menu
+        for bname, blabel in (
+            ("off",     "Off  (Fake Glass Gradient)"),
+            ("mica",    "Mica  (Win 11)"),
+            ("acrylic", "Acrylic  (Win 10/11)"),
+            ("tabbed",  "Tabbed Mica  (Win 11 22H2)"),
+        ):
+            a = QAction(blabel, self); a.setCheckable(True)
+            a.setChecked(bname == self._backdrop_name)
+            a.triggered.connect(lambda _=False, v=bname: self._apply_backdrop(v, save=True))
+            backdrop_menu.addAction(a)
+            self._backdrop_actions[bname] = a
+
         # Sound toggle
         self._sound_action = QAction("Sound Cues", self)
         self._sound_action.setCheckable(True)
@@ -2891,6 +2971,37 @@ class BeeperWidget(QMainWindow):
             CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         except Exception:
             pass
+
+    def _apply_backdrop(self, name: str, *, save: bool = False) -> None:
+        """Apply a DWM system backdrop (Mica / Acrylic / Tabbed / Off).
+        No-ops silently on older Windows builds that don't support the
+        attribute. Persisted in config under widget.dwm_backdrop."""
+        name = (name or "off").lower()
+        if name not in DWM_BACKDROPS:
+            name = "off"
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            hwnd = 0
+        ok = set_dwm_backdrop(hwnd, name, dark=(self._theme_name == "dark"))
+        self._backdrop_name = name
+        if hasattr(self, "_backdrop_menu"):
+            self._backdrop_menu.setTitle(f"Backdrop:  {name.capitalize()}")
+        for v, act in self._backdrop_actions.items():
+            act.setChecked(v == name)
+        if save:
+            try:
+                cfg = load_cfg()
+                cfg.setdefault("widget", {})["dwm_backdrop"] = name
+                CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+        if not ok and name != "off":
+            # Let the user know something didn't take — but only once, non-
+            # modally, via the tooltip on the menu entry.
+            act = self._backdrop_actions.get(name)
+            if act is not None:
+                act.setToolTip("DWM call returned non-zero — likely Windows 10 or Win 11 < 22H2.")
 
     def _set_compact(self, enable: bool, *, save: bool = False) -> None:
         """Toggle single-row compact view: hide tab strip, subtitle, ctx
