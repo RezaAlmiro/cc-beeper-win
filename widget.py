@@ -1218,9 +1218,22 @@ class BeeperWidget(QMainWindow):
 
 
 def main() -> int:
+    # pythonw suppresses stdout/stderr, so any uncaught exception would
+    # vanish silently. Route them to widget.log so crashes are diagnosable.
+    import logging, traceback
+    log_path = ROOT / "widget.log"
+    logging.basicConfig(
+        filename=str(log_path), level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    def _excepthook(etype, value, tb):
+        logging.error("uncaught exception:\n%s", "".join(traceback.format_exception(etype, value, tb)))
+    sys.excepthook = _excepthook
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     w = BeeperWidget(); w.show()
+    logging.info("widget started")
     return app.exec()
 
 

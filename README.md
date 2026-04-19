@@ -102,6 +102,28 @@ Open a new Claude Code session (`claude` in a terminal). A new tab will
 appear on the widget as soon as your first prompt fires. Reject or
 approve its permission prompts with the widget's four buttons.
 
+### If the widget closes
+
+The hook server keeps running in the background even if the widget
+window closes, so your Claude sessions keep working. To bring the
+widget back:
+
+```bash
+start_widget.bat   # relaunches just the widget (server keeps running)
+```
+
+Or `start_all.bat` to restart both. Widget crashes are logged to
+`widget.log` — check there first if it won't stay open.
+
+### Auto-launch on login (optional)
+
+```bash
+install_autostart.bat   # creates a shortcut in shell:startup
+```
+
+The widget + server will launch whenever you sign in. To undo, delete
+the `CC-Beeper-Win.lnk` shortcut from `shell:startup`.
+
 ## Uninstall
 
 ```bash

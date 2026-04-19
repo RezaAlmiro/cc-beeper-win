@@ -2,6 +2,7 @@
 .port
 server.log
 server_stdout.log
+widget.log
 *.log
 
 # Per-user trust state (regenerated on first run)
