@@ -413,9 +413,14 @@ QLabel#meta {
     color: #7A8299; font-family: 'Segoe UI', sans-serif;
     font-size: 10px; font-weight: 500;
 }
-QLabel#stateDot {
-    border-radius: 11px; min-width: 22px; min-height: 22px;
-    max-width: 22px; max-height: 22px;
+/* State badge at the top-right of the HUD. Pill-shape, coloured
+   background matching the action circle + state-specific text. */
+QLabel#stateBadge {
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 11px; font-weight: 800;
+    padding: 4px 10px 4px 10px;
+    border-radius: 11px;
+    letter-spacing: 0.5px;
 }
 QLabel#ctxTime {
     color: #1F2430; font-family: 'Segoe UI', sans-serif;
@@ -528,7 +533,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Sprite (top-left)</b> — The Pixel-Art Bedroom. Click It To Focus That Session's Terminal Window. If Claude Is Waiting On Tool Permission, Click Opens The Approval Popup Instead.</li>
   <li><b>Title</b> — The Session's Name. Starts As Your First Prompt And You Can Rename It Anytime (Button Or Right-Click). Right-Clicking The Title Also Reveals A Per-Session Slash-Command Menu.</li>
   <li><b>Subtitle</b> — Project Folder  ·  Model (E.g. "Cc-Beeper-Win  ·  Opus 4.7 (1M)").</li>
-  <li><b>State Dot (top-right)</b> — The Live Status Colour (See Below).</li>
+  <li><b>State Badge (Top-Right)</b> — A Coloured Pill Spelling The Live State ("Working", "Done", "Input", "Approve", "Error", "Idle"). Background Colour Matches The Action Circle So Everything Visually Agrees.</li>
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
@@ -539,8 +544,8 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
 </ul>
 
-<h3 style="color:#1F2430">State — Dot + Action Circle</h3>
-<p style="color:#60667A">The Top-Right Dot And The Big Centre-Bottom Circle Always Agree. The Circle Adds A Single-Letter Code Plus A Distinctive Animation Per State:</p>
+<h3 style="color:#1F2430">State — Badge + Action Circle</h3>
+<p style="color:#60667A">The Top-Right Pill Badge And The Big Centre-Bottom Circle Always Agree. The Badge Spells The State In Plain Words; The Circle Adds A Single-Letter Code Plus A Distinctive Animation Per State:</p>
 <ul style="color:#1F2430; line-height:1.7">
   <li><b style="background:#ffffff; color:#1F2430; padding:2px 6px; border:1px solid #bfc4cc; border-radius:6px">I</b>  ·  <b>Idle — White</b>, Steady. Session Registered, No Turn Running.</li>
   <li><b style="background:#4CD98D; color:#062615; padding:2px 6px; border-radius:6px">D</b>  ·  <b>Done — Green</b>, Steady. Turn Finished, Ready For Your Next Prompt.</li>
@@ -806,10 +811,10 @@ class BeeperWidget(QMainWindow):
         titles.addStretch()
         top.addLayout(titles, stretch=1)
 
-        self.state_dot = QLabel(""); self.state_dot.setObjectName("stateDot")
-        self.state_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._set_state_dot("snoozing")
-        top.addWidget(self.state_dot, 0, Qt.AlignmentFlag.AlignTop)
+        self.state_badge = QLabel(""); self.state_badge.setObjectName("stateBadge")
+        self.state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._set_state_badge("snoozing")
+        top.addWidget(self.state_badge, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(top)
 
         # Middle: context bar + time-style labels
@@ -938,13 +943,35 @@ class BeeperWidget(QMainWindow):
             self._pixmap_cache[fname] = QPixmap(str(p)) if p.exists() else QPixmap()
         return self._pixmap_cache[fname]
 
-    def _set_state_dot(self, state: str):
-        color = STATE_COLOR.get(state, "#9AA3B2")
-        self.state_dot.setStyleSheet(
-            f"background: {color}; border-radius: 11px; min-width: 22px; min-height: 22px;"
-            "border: 2px solid rgba(255,255,255,180);"
+    # Maps our internal state string → (display text, bg, fg) for the badge.
+    _BADGE_PALETTE = {
+        "snoozing":       ("IDLE",     "#ffffff", "#1F2430"),
+        "working":        ("WORKING",  "#FFB74D", "#2a1d00"),
+        "done":           ("DONE",     "#4CD98D", "#062615"),
+        "awaiting_input": ("INPUT",    "#3DA1FF", "#001830"),
+        "allow":          ("APPROVE",  "#FF3B3B", "#ffffff"),
+        "error":          ("ERROR",    "#8B0000", "#ffeaea"),
+        "input":          ("INPUT",    "#3DA1FF", "#001830"),
+        "listening":      ("LISTEN",   "#77C9EB", "#072833"),
+        "recap":          ("SPEAK",    "#77C9EB", "#072833"),
+    }
+
+    def _set_state_badge(self, state: str, *, has_pending: bool = False):
+        # Pending approval always wins over underlying state.
+        key = "allow" if has_pending else state
+        text, bg, fg = self._BADGE_PALETTE.get(key, ("IDLE", "#ffffff", "#1F2430"))
+        border = "#00000022"
+        self.state_badge.setText(text)
+        self.state_badge.setStyleSheet(
+            f"background: {bg}; color: {fg};"
+            "font-family: 'Segoe UI', sans-serif;"
+            "font-size: 11px; font-weight: 800;"
+            "padding: 4px 11px;"
+            "border-radius: 11px;"
+            f"border: 1px solid {border};"
+            "letter-spacing: 0.6px;"
         )
-        self.state_dot.setToolTip(state)
+        self.state_badge.setToolTip(key)
 
     def _active_session(self) -> dict[str, Any] | None:
         if not self._sessions:
@@ -1051,7 +1078,7 @@ class BeeperWidget(QMainWindow):
     def _render_empty(self, strategy, mode):
         self.lbl_title.setText("— No Active Sessions —")
         self.lbl_subtitle.setText(f"Strategy {(strategy or '?').title()}   ·   Mode {(mode or '?').title()}")
-        self._set_state_dot("snoozing")
+        self._set_state_badge("snoozing")
         self.ctx_bar.setValue(0); self.lbl_ctx_used.setText(""); self.lbl_ctx_left.setText("")
         self.lbl_meta.setText("Open A Claude Code Session And Its Tab Will Appear Here")
         self.btn_action.set_state("idle", "I", "Idle — No Active Sessions")
@@ -1071,10 +1098,9 @@ class BeeperWidget(QMainWindow):
             f"right-click to rename / send slash command"
         )
         self.lbl_subtitle.setText(subtitle)
-        self._set_state_dot(state)
-
         pending = s.get("pending") or []
         has_pending = bool(pending)
+        self._set_state_badge(state, has_pending=has_pending)
 
         # Action circle — letter + state; the ActionCircle class drives
         # its own animation based on mode.
