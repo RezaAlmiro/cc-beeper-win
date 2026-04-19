@@ -23,8 +23,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import math
 import requests
-from PySide6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect, QSize, QEvent, QRectF
+from PySide6.QtCore import (
+    Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect, QSize,
+    QEvent, QRectF, Signal,
+)
 from PySide6.QtGui import (
     QAction, QBrush, QColor, QCursor, QFont, QFontMetrics, QGuiApplication,
     QIcon, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap,
@@ -175,6 +179,121 @@ class GlassPanel(QWidget):
 
 
 # ==========================================================================
+# The big circular state button — custom-painted so we can animate per state
+# ==========================================================================
+
+class ActionCircle(QWidget):
+    """Circular state button. Each mode has its own colour and animation:
+
+    - idle     → white, steady
+    - done     → green, steady
+    - working  → amber, rotating clock-arc around the rim
+    - input    → blue, soft pulsing flash
+    - approval → amber letter with a pulsing red halo ring outside
+    - error    → dark crimson, fast hard flash
+    """
+    clicked = Signal()
+
+    # (background, letter colour, border) per mode
+    _PALETTE = {
+        "idle":     ("#ffffff", "#1F2430", "#bfc4cc"),
+        "done":     ("#4CD98D", "#062615", "#2fa35a"),
+        "working":  ("#FFB74D", "#2a1d00", "#c78a2a"),
+        "input":    ("#3DA1FF", "#001830", "#1a6fbf"),
+        "approval": ("#FFB74D", "#2a1d00", "#c78a2a"),
+        "error":    ("#8B0000", "#ffeaea", "#5a0000"),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(52, 52)           # slightly larger to leave room for halo
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mode = "idle"
+        self._letter = "I"
+        self._tooltip_text = "Idle"
+        self._tick = 0                       # monotonically increments every timer fire
+        self._timer = QTimer(self)
+        self._timer.setInterval(40)          # 25 fps is plenty for this
+        self._timer.timeout.connect(self._on_tick)
+
+    def set_state(self, mode: str, letter: str, tooltip: str) -> None:
+        if mode not in self._PALETTE:
+            mode = "idle"
+        self._mode = mode
+        self._letter = letter
+        self._tooltip_text = tooltip
+        self.setToolTip(tooltip)
+        # Start the timer for any animated mode; idle + done are static.
+        animated = mode in {"working", "input", "approval", "error"}
+        if animated and not self._timer.isActive():
+            self._timer.start()
+        elif not animated and self._timer.isActive():
+            self._timer.stop()
+            self._tick = 0
+        self.update()
+
+    def _on_tick(self) -> None:
+        self._tick = (self._tick + 1) % 100000
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        bg_hex, fg_hex, border_hex = self._PALETTE[self._mode]
+        # Circle rect — leave margin for halo / stroke.
+        margin = 4
+        rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
+
+        # ---- Halo for APPROVAL (pulsing red ring outside the circle) ----
+        if self._mode == "approval":
+            phase = (math.sin(self._tick * 0.15) + 1) / 2   # 0..1 slow
+            ring_alpha = int(70 + 140 * phase)
+            for i in range(3, 0, -1):
+                pen = QPen(QColor(255, 46, 46, max(20, ring_alpha // (i * 1))), i * 2)
+                p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(rect.adjusted(-i * 2, -i * 2, i * 2, i * 2))
+
+        # ---- Main circle body (with flash/alpha depending on mode) ----
+        bg = QColor(bg_hex)
+        if self._mode == "error":
+            # Fast, sharp flash — ~3× per second
+            phase = (math.sin(self._tick * 0.45) + 1) / 2
+            bg.setAlphaF(0.55 + 0.45 * phase)
+        elif self._mode == "input":
+            # Softer, slower blue flash
+            phase = (math.sin(self._tick * 0.22) + 1) / 2
+            bg.setAlphaF(0.6 + 0.4 * phase)
+
+        p.setBrush(QBrush(bg))
+        p.setPen(QPen(QColor(border_hex), 2))
+        p.drawEllipse(rect)
+
+        # ---- Working: rotating clock-sweep arc around the inner rim ----
+        if self._mode == "working":
+            arc_rect = rect.adjusted(4, 4, -4, -4)
+            start = (-self._tick * 6) % 360          # negative = clockwise
+            span = 70                                  # degrees of arc
+            pen = QPen(QColor("#5a3b00"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            # Qt angles are in 1/16 of a degree
+            p.drawArc(arc_rect, int(start * 16), int(-span * 16))
+
+        # ---- State letter (centered) ----
+        font = QFont("Segoe UI")
+        font.setWeight(QFont.Weight.Black)
+        font.setPointSize(14 if len(self._letter) <= 1 else 11)
+        p.setFont(font)
+        p.setPen(QPen(QColor(fg_hex)))
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._letter)
+
+
+# ==========================================================================
 # Small icon button with glass-friendly pressed state
 # ==========================================================================
 
@@ -196,23 +315,38 @@ QPushButton#iconBtn[accent="red"]   { background: #FF5E5E; color: white; border:
 QPushButton#iconBtn[accent="green"] { background: #4CD98D; color: #062615; border: 1px solid #2fa35a; }
 QPushButton#iconBtn[accent="amber"] { background: #FFB74D; color: #2a1d00; border: 1px solid #c78a2a; }
 
-/* The big circular state button in the centre of the bottom row. */
-QPushButton#actionCircle {
-    min-width: 46px; max-width: 46px; min-height: 46px; max-height: 46px;
-    border-radius: 23px;
-    border: 2px solid rgba(255, 255, 255, 220);
+/* Matching-size circular prev/next arrows. */
+QPushButton#arrowCircle {
+    min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 220);
+    background: rgba(255, 255, 255, 170);
+    color: #1F2430;
     font-family: 'Segoe UI', sans-serif;
-    font-size: 16px; font-weight: 800;
-    color: #0B1020;
-    background: #9AA3B2;
+    font-size: 14px; font-weight: 800;
 }
-QPushButton#actionCircle:hover { border: 2px solid #1F2430; }
-QPushButton#actionCircle[accent="done"]    { background: #4CD98D; color: #062615; }
-QPushButton#actionCircle[accent="idle"]    { background: #FFD24D; color: #2a2400; }
-QPushButton#actionCircle[accent="working"] { background: #FF5E5E; color: #ffffff; }
-QPushButton#actionCircle[accent="input"]   { background: #3DA1FF; color: #001830; }
-QPushButton#actionCircle[accent="approve"] { background: #FFB74D; color: #2a1d00; }
-QPushButton#actionCircle[accent="error"]   { background: #FF5E5E; color: #ffffff; }
+QPushButton#arrowCircle:hover { border: 1px solid #1F2430; background: rgba(255,255,255,230); }
+
+/* Notebook-style mini tabs above the HUD body */
+QPushButton.miniTab {
+    background: rgba(255, 255, 255, 140);
+    color: #1F2430;
+    border: 1px solid rgba(0, 0, 0, 40);
+    border-bottom: none;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 10px; font-weight: 700;
+    padding: 3px 9px;
+    min-height: 20px;
+}
+QPushButton.miniTab[active="true"] {
+    background: rgba(255, 255, 255, 245);
+    color: #0B1020;
+    border: 2px solid #1F2430;
+    border-bottom: none;
+    padding: 3px 9px 5px 9px;
+}
 
 QPushButton#smallBtn {
     background: transparent; color: #1F2430;
@@ -353,20 +487,21 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
-  <li><b>◀ / ▶ Arrows</b> — Cycle Through All Active Sessions.</li>
+  <li><b>◀ / ▶ Arrows</b> — Cycle Through Active Sessions. Matches The Size Of The State Circle So The Bottom Row Feels Balanced.</li>
+  <li><b>Notebook Tab Strip</b> — Thin Row Along The Top Of The HUD With One Small Folder-Style Tab Per Active Session. The Active Tab Is Outlined In Black; Click Any Tab To Jump To That Session. Mirrors What The ◀ / ▶ Arrows Do But Gives You The Full List At A Glance.</li>
   <li><b>⇣ Commands ▾</b> — Dropdown With /compact, /clear, /cost, /model, /resume. Focuses The Session's Terminal And Types The Command.</li>
   <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
 </ul>
 
 <h3 style="color:#1F2430">State — Dot + Action Circle</h3>
-<p style="color:#60667A">The Top-Right Dot And The Big Centre-Bottom Circle Always Agree. The Circle Adds A Single-Letter Code So You Know The State At A Glance:</p>
-<ul style="color:#1F2430; line-height:1.6">
-  <li><b style="color:#4CD98D">D  —  Green</b>  ·  <b>Done</b>. Turn Finished, Nothing Else Expected — Ready For Your Next Prompt.</li>
-  <li><b style="color:#FFD24D">I  —  Yellow</b>  ·  <b>Idle</b>. Session Is Registered But Hasn't Started A Turn Yet.</li>
-  <li><b style="color:#FF5E5E">W  —  Flashing Red</b>  ·  <b>Working</b>. Claude Is Mid-Turn, Tools Are Firing.</li>
-  <li><b style="color:#3DA1FF">IN  —  Flashing Blue</b>  ·  <b>Input Needed</b>. Claude Asked A Follow-Up; Waiting On Your Reply.</li>
-  <li><b style="color:#FFB74D">A  —  Flashing Amber</b>  ·  <b>Approval Pending</b>. A Tool Call Needs Your Yes/No. Click The Circle To Open The 4-Way Ladder.</li>
-  <li><b style="color:#FF5E5E">E  —  Solid Red</b>  ·  <b>Error</b>. The Last Turn Failed.</li>
+<p style="color:#60667A">The Top-Right Dot And The Big Centre-Bottom Circle Always Agree. The Circle Adds A Single-Letter Code Plus A Distinctive Animation Per State:</p>
+<ul style="color:#1F2430; line-height:1.7">
+  <li><b style="background:#ffffff; color:#1F2430; padding:2px 6px; border:1px solid #bfc4cc; border-radius:6px">I</b>  ·  <b>Idle — White</b>, Steady. Session Registered, No Turn Running.</li>
+  <li><b style="background:#4CD98D; color:#062615; padding:2px 6px; border-radius:6px">D</b>  ·  <b>Done — Green</b>, Steady. Turn Finished, Ready For Your Next Prompt.</li>
+  <li><b style="background:#FFB74D; color:#2a1d00; padding:2px 6px; border-radius:6px">W</b>  ·  <b>Working — Amber</b>, With A Rotating Clock-Sweep Arc Around The Rim. Claude Is Mid-Turn.</li>
+  <li><b style="background:#3DA1FF; color:#001830; padding:2px 6px; border-radius:6px">IN</b>  ·  <b>Input Needed — Blue</b>, Flashing Softly. Claude Asked A Follow-Up; Waiting On Your Reply.</li>
+  <li><b style="background:#FFB74D; color:#2a1d00; padding:2px 6px; border:2px solid #ff2e2e; border-radius:6px">A</b>  ·  <b>Approval Pending — Amber Body With A Pulsing Red Halo Ring</b>. A Tool Call Needs Your Yes/No. Click The Circle To Open The 4-Way Ladder.</li>
+  <li><b style="background:#8B0000; color:#ffeaea; padding:2px 6px; border-radius:6px">E</b>  ·  <b>Error — Dark Red</b>, Fast Hard Flash. The Last Turn Failed.</li>
 </ul>
 
 <h3 style="color:#1F2430">The Approval Ladder</h3>
@@ -580,6 +715,18 @@ class BeeperWidget(QMainWindow):
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(8)
 
+        # Notebook-style mini-tab strip: one small tab per active session.
+        # Sits above the main body so you can see all sessions at a glance
+        # and click to jump between them (in addition to the ◀/▶ arrows).
+        self.tabbar = QWidget(container)
+        self.tabbar.setFixedHeight(24)
+        self.tabbar_layout = QHBoxLayout(self.tabbar)
+        self.tabbar_layout.setContentsMargins(4, 0, 4, 0)
+        self.tabbar_layout.setSpacing(2)
+        self.tabbar_layout.addStretch(1)
+        root.addWidget(self.tabbar)
+        self._tab_buttons: dict[str, QPushButton] = {}
+
         # Top row: sprite + title block + state dot
         top = QHBoxLayout(); top.setSpacing(12)
         self.sprite = QLabel(container)
@@ -629,14 +776,9 @@ class BeeperWidget(QMainWindow):
         # Bottom controls
         btns = QHBoxLayout(); btns.setSpacing(6)
         self.btn_rename = QPushButton("✎ Rename"); self.btn_rename.setObjectName("smallBtn")
-        self.btn_prev   = QPushButton("◀");         self.btn_prev.setObjectName("iconBtn")
-        self.btn_action = QPushButton("I");         self.btn_action.setObjectName("actionCircle")
-        self.btn_action.setToolTip("Session state")
-        self.btn_next   = QPushButton("▶");         self.btn_next.setObjectName("iconBtn")
-        self._action_fx = QGraphicsOpacityEffect(self.btn_action)
-        self._action_fx.setOpacity(1.0)
-        self.btn_action.setGraphicsEffect(self._action_fx)
-        self._action_flash: QPropertyAnimation | None = None
+        self.btn_prev   = QPushButton("◀");         self.btn_prev.setObjectName("arrowCircle")
+        self.btn_action = ActionCircle();           self.btn_action.clicked.connect(self._on_action_click)
+        self.btn_next   = QPushButton("▶");         self.btn_next.setObjectName("arrowCircle")
         # Slash-command dropdown (replaces the single /compact button)
         self.btn_slash  = QPushButton("⇣ Commands ▾"); self.btn_slash.setObjectName("smallBtn")
         slash_menu = QMenu(self)
@@ -654,7 +796,6 @@ class BeeperWidget(QMainWindow):
 
         self.btn_rename.clicked.connect(self._rename_active)
         self.btn_prev.clicked.connect(lambda: self._cycle_session(-1))
-        self.btn_action.clicked.connect(self._on_action_click)
         self.btn_next.clicked.connect(lambda: self._cycle_session(+1))
         btns.addWidget(self.btn_rename)
         btns.addStretch()
@@ -764,6 +905,7 @@ class BeeperWidget(QMainWindow):
             data = {}
         self._sync_menu_selections(data.get("strategy"), data.get("mode"))
         self._sessions = data.get("sessions", []) or []
+        self._refresh_tabbar(self._sessions)
 
         s = self._active_session()
         if not s:
@@ -771,39 +913,60 @@ class BeeperWidget(QMainWindow):
             return
         self._render_session(s)
 
+    def _refresh_tabbar(self, sessions: list[dict[str, Any]]) -> None:
+        """Keep notebook-style mini-tabs in sync with the server's session list."""
+        current_ids = {s["session_id"] for s in sessions}
+        # Drop tabs for gone sessions
+        for sid in list(self._tab_buttons.keys()):
+            if sid not in current_ids:
+                btn = self._tab_buttons.pop(sid)
+                self.tabbar_layout.removeWidget(btn)
+                btn.deleteLater()
+        # Add new tabs / refresh label+active marker
+        for s in sessions:
+            sid = s["session_id"]
+            btn = self._tab_buttons.get(sid)
+            if btn is None:
+                btn = QPushButton(self.tabbar)
+                btn.setProperty("class", "miniTab")
+                btn.clicked.connect(lambda _=False, x=sid: self._select_session(x))
+                # Insert before the trailing stretch
+                self.tabbar_layout.insertWidget(self.tabbar_layout.count() - 1, btn)
+                self._tab_buttons[sid] = btn
+            label = session_label(s)
+            dot = STATE_COLOR.get(s.get("state", "snoozing"), "#9AA3B2")
+            # Show the coloured state dot + truncated label
+            btn.setText(f"●  {label[:18]}")
+            btn.setStyleSheet(f"QPushButton {{ color: #1F2430; }} QPushButton::first-letter {{ color: {dot}; }}")
+            is_active = sid == self._active_sid
+            btn.setProperty("active", is_active)
+            btn.style().unpolish(btn); btn.style().polish(btn)
+            btn.setToolTip(
+                f"session: {sid[:8]}\n"
+                f"state: {s.get('state','?')}\n"
+                f"cwd: {s.get('cwd','')}"
+            )
+
+    def _select_session(self, sid: str) -> None:
+        if sid not in {s["session_id"] for s in self._sessions}:
+            return
+        self._active_sid = sid
+        # Immediate re-render without waiting for next poll
+        s = next((x for x in self._sessions if x["session_id"] == sid), None)
+        if s: self._render_session(s)
+        self._refresh_tabbar(self._sessions)
+
     def _render_empty(self, strategy, mode):
         self.lbl_title.setText("— No Active Sessions —")
         self.lbl_subtitle.setText(f"Strategy {(strategy or '?').title()}   ·   Mode {(mode or '?').title()}")
         self._set_state_dot("snoozing")
         self.ctx_bar.setValue(0); self.lbl_ctx_used.setText(""); self.lbl_ctx_left.setText("")
         self.lbl_meta.setText("Open A Claude Code Session And Its Tab Will Appear Here")
-        self._set_action_button(letter="I", accent="idle", tooltip="Idle — No Active Sessions", flash=False)
+        self.btn_action.set_state("idle", "I", "Idle — No Active Sessions")
         pm = self._load_pixmap("snoozing.png")
         if not pm.isNull():
             self.sprite.setPixmap(pm.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
 
-    # --- action circle rendering -----------------------------------------
-
-    def _set_action_button(self, *, letter: str, accent: str, tooltip: str, flash: bool) -> None:
-        self.btn_action.setText(letter)
-        self.btn_action.setProperty("accent", accent)
-        self.btn_action.style().unpolish(self.btn_action)
-        self.btn_action.style().polish(self.btn_action)
-        self.btn_action.setToolTip(tooltip)
-        self._set_action_flash(flash)
-
-    def _set_action_flash(self, on: bool) -> None:
-        if on:
-            if self._action_flash is None:
-                a = QPropertyAnimation(self._action_fx, b"opacity", self)
-                a.setDuration(750)
-                a.setStartValue(1.0); a.setKeyValueAt(0.5, 0.35); a.setEndValue(1.0)
-                a.setLoopCount(-1); a.setEasingCurve(QEasingCurve.Type.InOutSine); a.start()
-                self._action_flash = a
-        else:
-            if self._action_flash is not None:
-                self._action_flash.stop(); self._action_flash = None
-            self._action_fx.setOpacity(1.0)
 
     def _render_session(self, s):
         state = s.get("state", "snoozing")
@@ -821,31 +984,26 @@ class BeeperWidget(QMainWindow):
         pending = s.get("pending") or []
         has_pending = bool(pending)
 
-        # Action circle — letter + colour + optional flashing
+        # Action circle — letter + state; the ActionCircle class drives
+        # its own animation based on mode.
         if has_pending:
-            self._set_action_button(letter="A", accent="approve",
-                                    tooltip="Approve? — tool wants permission (flashing amber)",
-                                    flash=True)
+            self.btn_action.set_state("approval", "A",
+                "Approval Pending — tool wants permission (pulsing red halo, amber body)")
         elif state == "awaiting_input":
-            self._set_action_button(letter="IN", accent="input",
-                                    tooltip="Input — Claude is waiting on your reply (flashing blue)",
-                                    flash=True)
+            self.btn_action.set_state("input", "IN",
+                "Input Needed — Claude is waiting on your reply (flashing blue)")
         elif state == "working":
-            self._set_action_button(letter="W", accent="working",
-                                    tooltip="Working — Claude is mid-turn (flashing red)",
-                                    flash=True)
+            self.btn_action.set_state("working", "W",
+                "Working — Claude is mid-turn (amber, rotating clock arc)")
         elif state == "done":
-            self._set_action_button(letter="D", accent="done",
-                                    tooltip="Done — turn finished, ready for next prompt (green)",
-                                    flash=False)
+            self.btn_action.set_state("done", "D",
+                "Done — turn finished, ready for next prompt (green)")
         elif state == "error":
-            self._set_action_button(letter="E", accent="error",
-                                    tooltip="Error — last turn failed (red)",
-                                    flash=False)
+            self.btn_action.set_state("error", "E",
+                "Error — last turn failed (dark red, fast flash)")
         else:
-            self._set_action_button(letter="I", accent="idle",
-                                    tooltip="Idle — ready (yellow)",
-                                    flash=False)
+            self.btn_action.set_state("idle", "I",
+                "Idle — no active turn (white)")
 
         # Context bar + labels
         stats = s.get("stats") or {}
