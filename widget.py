@@ -172,7 +172,13 @@ def apply_theme(name: str) -> str:
 # older Win10/Win11 21H2 builds see no change.
 
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWA_SYSTEMBACKDROP_TYPE = 38
+
+DWMWCP_DEFAULT    = 0
+DWMWCP_DONOTROUND = 1
+DWMWCP_ROUND      = 2
+DWMWCP_ROUNDSMALL = 3
 
 DWM_BACKDROPS = {
     "off":     1,   # DWMSBT_NONE
@@ -180,6 +186,29 @@ DWM_BACKDROPS = {
     "acrylic": 3,   # DWMSBT_TRANSIENTWINDOW
     "tabbed":  4,   # DWMSBT_TABBEDWINDOW
 }
+
+
+def set_dwm_corner(hwnd: int, mode: int = DWMWCP_DONOTROUND) -> bool:
+    """Tell DWM how to round the outer system window corners. We default
+    to DONOTROUND because our Qt GlassPanel paints its own 22-px rounded
+    path — the Win 11 default ~8 px outer rounding clips that path and
+    visually reads as a second overlay."""
+    import sys as _sys
+    if _sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        dwmapi = ctypes.windll.dwmapi
+        v = ctypes.c_int(int(mode))
+        hr = dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            wintypes.DWORD(DWMWA_WINDOW_CORNER_PREFERENCE),
+            ctypes.byref(v), ctypes.sizeof(v),
+        )
+        return int(hr) == 0
+    except Exception:
+        return False
 
 
 def set_dwm_backdrop(hwnd: int, name: str, dark: bool = False) -> bool:
@@ -1740,9 +1769,12 @@ class BeeperWidget(QMainWindow):
         if self._compact_mode:
             self._set_compact(True, save=False)
 
-        # Apply DWM backdrop if configured. Deferred via singleShot so the
-        # HWND is real (Qt allocates it at first show) before the ctypes
-        # call runs.
+        # DWM corner + backdrop: deferred via singleShot so the HWND is
+        # real (Qt allocates it at first show) before the ctypes calls
+        # run. Corner override is applied for EVERY user — it fixes a
+        # double-edge artifact where Win 11's default ~8 px window
+        # rounding clipped our Qt 22 px rounded glass.
+        QTimer.singleShot(0, self._apply_dwm_corner)
         if self._backdrop_name != "off":
             QTimer.singleShot(0, lambda: self._apply_backdrop(self._backdrop_name, save=False))
 
@@ -2969,6 +3001,16 @@ class BeeperWidget(QMainWindow):
             cfg = load_cfg()
             cfg.setdefault("widget", {})["theme"] = applied
             CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _apply_dwm_corner(self) -> None:
+        """Disable Windows 11's outer system-window rounding so the Qt
+        GlassPanel's 22-px rounded path is the only corner visible. No-
+        ops silently on Win 10 and non-Windows."""
+        try:
+            hwnd = int(self.winId())
+            set_dwm_corner(hwnd, DWMWCP_DONOTROUND)
         except Exception:
             pass
 
