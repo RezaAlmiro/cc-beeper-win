@@ -796,13 +796,21 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li>Drop To A Cheaper Model With <b>/model</b> For Routine Edits; Promote Back To Opus For Hard Reasoning.</li>
 </ul>
 
-<h3 style="color:#1F2430">Claude Usage Overview</h3>
-<p style="color:#60667A">Right-Click → <b>Claude Usage Overview…</b> Opens A Rollup Of Your Token Usage Across Every Local Claude Code Transcript Under <b>~/.claude/projects/</b>.</p>
+<h3 style="color:#1F2430">Session &amp; Limits</h3>
+<p style="color:#60667A">Right-Click → <b>Session &amp; Limits…</b> Opens A Dark-Mode Panel Styled Like Anthropic's Desktop-App Usage Page. Shows:</p>
 <ul style="color:#1F2430; line-height:1.6">
-  <li><b>Last 1 Hour</b>, <b>Last 5 Hours (Max Rate-Limit Window)</b>, <b>Today</b>, <b>This Week</b>, <b>All-Time</b> — Each Window Shows Turns, Sessions, And Input / Output / Cache-Read / Cache-Write Tokens.</li>
-  <li><b>Top Projects</b> — Ranked By Input + Output Tokens Across All Sessions In That Project Folder.</li>
+  <li><b>Current Session</b> — Rolling 5-Hour Window With A Progress Bar And A "Resets In" Timer Pegged To The Oldest Message In The Window.</li>
+  <li><b>Weekly Limits</b> — All Models, Sonnet Only, Opus Only (And Haiku If Any), Each With A Bar And "Resets On Monday 00:00" Timer.</li>
+  <li><b>Raw Totals</b> — Exact Token Counts For Today / Week / All-Time.</li>
+  <li><b>Open Anthropic Usage Page</b> — One-Click Launch Of <b>claude.ai/settings/usage</b> For The Authoritative Numbers. Anthropic Doesn't Expose Those Live Percentages Without An Authenticated Session, So This Button Is The Reliable Path For Exact Figures.</li>
 </ul>
-<p style="color:#60667A">Max / Team / Pro Subscribers Should Watch The <b>Last 5 Hours</b> Row — That's The Rolling Window Anthropic Uses For Rate Limits. API Users Can Take The Token Counts And Multiply By Their Plan's Per-Token Pricing For Dollar Estimates. Walks Every JSONL Under Your Claude Projects Dir; Cached By File Mtime So Repeat Opens Are Fast.</p>
+<p style="color:#60667A">Progress Bars Use Rough Per-Plan Defaults (Max-Ish Caps). To Match Your Exact Plan, Set Them In <b>config.json</b> Under <b>widget.usage_limits</b>:</p>
+<ul style="color:#1F2430; line-height:1.6; font-family:Consolas, monospace; font-size:11px">
+  <li>session_5h — Tokens Per 5-Hour Rolling Window</li>
+  <li>weekly_all — Tokens Per Week, All Models Combined</li>
+  <li>weekly_sonnet — Sonnet-Only Weekly Quota</li>
+  <li>weekly_opus — Opus-Only Weekly Quota</li>
+</ul>
 
 <h3 style="color:#1F2430">Sound Cues</h3>
 <p style="color:#60667A">Three Soft Melodic Chimes, Each For A Different State Transition:</p>
@@ -850,44 +858,104 @@ class HelpDialog(QDialog):
         outer.addWidget(close_btn)
 
 
+USAGE_CSS = """
+QDialog#usage { background: #0B0E14; }
+QLabel#u_title { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: 800; }
+QLabel#u_section { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 14px; font-weight: 800; padding: 14px 0 2px 0; }
+QLabel#u_rowname { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 700; }
+QLabel#u_rowreset { color: #8A94A6; font-family: 'Segoe UI', sans-serif; font-size: 11px; }
+QLabel#u_rowpct { color: #C6CCD8; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 600; }
+QLabel#u_muted { color: #8A94A6; font-family: 'Segoe UI', sans-serif; font-size: 11px; }
+QLabel#u_link { color: #7AA8FF; text-decoration: underline; }
+QProgressBar#u_bar {
+    background: #23283A;
+    border: none;
+    border-radius: 4px;
+    text-align: center;
+    min-height: 14px; max-height: 14px;
+    color: transparent;
+}
+QProgressBar#u_bar::chunk { background: #487CFF; border-radius: 4px; }
+QProgressBar#u_bar[urgency="hot"]::chunk  { background: #ff7a00; }
+QProgressBar#u_bar[urgency="crit"]::chunk { background: #ff2e2e; }
+QPushButton#u_btn {
+    background: #1F2430;
+    color: #F2F5FA;
+    border: 1px solid #2c3344;
+    border-radius: 6px;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 12px; font-weight: 700;
+    padding: 6px 12px;
+}
+QPushButton#u_btn:hover { background: #2c3344; }
+QPushButton#u_primary {
+    background: #487CFF;
+    color: #ffffff;
+    border: 1px solid #3768e0;
+    border-radius: 6px;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 12px; font-weight: 700;
+    padding: 6px 12px;
+}
+QPushButton#u_primary:hover { background: #3768e0; }
+"""
+
+
 class UsageDialog(QDialog):
-    """Aggregate 'how much Claude have I used' view — windows for
-    1 h / 5 h / today / week / all-time plus a per-project list.
-    Useful for Max-plan rate-limit awareness and for API users who want
-    to eyeball their consumption."""
+    """Dark-mode 'Session & Weekly Limits' panel in the style of
+    Claude's desktop-app usage page. Progress bars are driven by local
+    transcript totals; caps are configurable (or use rough defaults).
+    A prominent 'Open Anthropic Usage Page' button links to the live
+    numbers for exact % tracking."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("CC-Beeper-Win — Claude Usage Overview")
+        self.setObjectName("usage")
+        self.setWindowTitle("CC-Beeper-Win — Session & Limits")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        self.setStyleSheet(BUTTON_CSS + SETTINGS_CSS + """
-            QLabel#wlabel { color: #1F2430; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 800; padding: 8px 0 2px 0; }
-            QLabel#wbody  { color: #1F2430; font-family: Consolas, monospace; font-size: 11px; padding: 2px 8px 8px 8px; }
-            QLabel#proj   { color: #1F2430; font-family: Consolas, monospace; font-size: 11px; padding: 1px 8px; }
-        """)
-        self.resize(560, 560)
+        self.setStyleSheet(BUTTON_CSS + SETTINGS_CSS + USAGE_CSS)
+        self.resize(640, 560)
+
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 10); outer.setSpacing(4)
+        outer.setContentsMargins(20, 18, 20, 16); outer.setSpacing(0)
 
-        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.Shape.NoFrame)
+        title_row = QHBoxLayout()
+        title = QLabel("Usage")
+        title.setObjectName("u_title")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        outer.addLayout(title_row)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._inner = QWidget()
-        self._inner.setStyleSheet("background: rgba(255,255,255,235); border: 1px solid rgba(0,0,0,25); border-radius: 6px;")
+        self._inner.setStyleSheet("background: transparent;")
         self._inner_layout = QVBoxLayout(self._inner)
-        self._inner_layout.setContentsMargins(10, 10, 10, 10); self._inner_layout.setSpacing(0)
-        area.setWidget(self._inner)
-        outer.addWidget(area, stretch=1)
+        self._inner_layout.setContentsMargins(0, 8, 0, 8); self._inner_layout.setSpacing(2)
+        self._scroll.setWidget(self._inner)
+        outer.addWidget(self._scroll, stretch=1)
 
-        row = QHBoxLayout(); row.setSpacing(6)
-        refresh = QPushButton("↻  Reload"); refresh.setObjectName("iconBtn")
-        refresh.clicked.connect(self.refresh)
-        close_btn = QPushButton("Close"); close_btn.setObjectName("iconBtn")
+        btnrow = QHBoxLayout(); btnrow.setSpacing(8)
+        open_page = QPushButton("Open Anthropic Usage Page")
+        open_page.setObjectName("u_primary")
+        open_page.clicked.connect(self._open_anthropic)
+        open_page.setToolTip("Opens claude.ai/settings/usage in your default browser —\n"
+                             "the numbers there are Anthropic's authoritative %, which\n"
+                             "require auth we don't have locally.")
+        btnrow.addWidget(open_page)
+        btnrow.addStretch(1)
+        reload_btn = QPushButton("↻ Reload"); reload_btn.setObjectName("u_btn")
+        reload_btn.clicked.connect(self.refresh)
+        close_btn = QPushButton("Close"); close_btn.setObjectName("u_btn")
         close_btn.clicked.connect(self.hide)
-        row.addWidget(refresh); row.addStretch(); row.addWidget(close_btn)
-        outer.addLayout(row)
+        btnrow.addWidget(reload_btn); btnrow.addWidget(close_btn)
+        outer.addLayout(btnrow)
+
+    # ----- rendering ----------------------------------------------------
 
     def showEvent(self, event) -> None:
-        self.refresh()
-        super().showEvent(event)
+        self.refresh(); super().showEvent(event)
 
     def _clear_inner(self) -> None:
         while self._inner_layout.count():
@@ -896,83 +964,171 @@ class UsageDialog(QDialog):
             if w is not None:
                 w.deleteLater()
 
+    def _user_limits(self) -> dict[str, int]:
+        """User-configurable plan caps for the progress bars. Rough
+        Anthropic-Max-ish defaults if the user hasn't set anything.
+        Override via config.json: widget.usage_limits.{session_5h, weekly_all,
+        weekly_sonnet, weekly_opus} in raw token counts."""
+        cfg = load_cfg().get("widget", {}).get("usage_limits", {}) or {}
+        return {
+            "session_5h":    int(cfg.get("session_5h")    or 1_000_000),
+            "weekly_all":    int(cfg.get("weekly_all")    or 10_000_000),
+            "weekly_sonnet": int(cfg.get("weekly_sonnet") or 10_000_000),
+            "weekly_opus":   int(cfg.get("weekly_opus")   or 3_000_000),
+        }
+
     def refresh(self) -> None:
         self._clear_inner()
         try:
             data = requests.get(server_url("/usage"), timeout=8).json()
         except Exception as e:
             err = QLabel(f"Couldn't reach server: {e}")
-            err.setStyleSheet("color: #C23A3A; font-family: Consolas, monospace; padding: 8px;")
+            err.setStyleSheet("color: #ff7a7a; font-family: Consolas, monospace; padding: 8px;")
             self._inner_layout.addWidget(err); return
 
-        if not data.get("projects_dir_exists"):
-            err = QLabel(f"Projects directory not found:\n{data.get('projects_dir','?')}")
-            err.setStyleSheet("color: #C23A3A; font-family: Consolas, monospace; padding: 8px;")
-            self._inner_layout.addWidget(err); return
-
-        import datetime as _dt
-        stamp = _dt.datetime.fromtimestamp(data.get("generated_at", 0)).strftime("%Y-%m-%d %H:%M:%S")
-        header = QLabel(
-            f"<b>Claude Usage Overview</b>&nbsp; · &nbsp;"
-            f"<span style='color:#60667A'>Scanned {data.get('files_scanned',0)} "
-            f"transcripts @ {stamp}</span>"
-        )
-        header.setTextFormat(Qt.TextFormat.RichText)
-        header.setStyleSheet("font-family: 'Segoe UI', sans-serif; font-size: 13px; padding: 0 0 8px 0;")
-        self._inner_layout.addWidget(header)
-
-        labels = data.get("window_labels") or {}
         windows = data.get("windows") or {}
-        for key in ("last_1h", "last_5h", "today", "this_week", "all"):
-            bucket = windows.get(key) or {}
-            title = labels.get(key, key)
-            self._inner_layout.addWidget(self._section(title, bucket))
+        fam_week = data.get("by_family_week") or {}
+        fam_5h   = data.get("by_family_5h")   or {}
+        limits = self._user_limits()
 
-        self._inner_layout.addWidget(self._section_header("Top Projects By Output Tokens"))
-        projects = data.get("by_project") or []
-        if not projects:
-            self._inner_layout.addWidget(self._line("— none —"))
-        else:
-            for row in projects[:10]:
-                self._inner_layout.addWidget(self._project_row(row))
+        # ---- Current session (5h rolling) ----
+        self._inner_layout.addWidget(self._section_header("Current session"))
+        session_bucket = windows.get("last_5h") or {}
+        session_tokens = int(session_bucket.get("input", 0)) + int(session_bucket.get("output", 0))
+        session_reset = data.get("next_5h_reset")
+        self._inner_layout.addWidget(self._bar_row(
+            name="Current session",
+            resets_label=self._time_until(session_reset, fallback="rolling 5-hour window"),
+            value=session_tokens,
+            cap=limits["session_5h"],
+        ))
+
+        # ---- Weekly limits section ----
+        self._inner_layout.addWidget(self._section_header("Weekly limits"))
+        weekly_reset = data.get("next_week_reset")
+        reset_label = self._time_until(weekly_reset, fallback="next Monday 00:00")
+
+        week_bucket = windows.get("this_week") or {}
+        week_total = int(week_bucket.get("input", 0)) + int(week_bucket.get("output", 0))
+        self._inner_layout.addWidget(self._bar_row(
+            "All models", reset_label, week_total, limits["weekly_all"],
+        ))
+        sonnet_total = int(fam_week.get("sonnet", {}).get("input", 0)) + int(fam_week.get("sonnet", {}).get("output", 0))
+        self._inner_layout.addWidget(self._bar_row(
+            "Sonnet only", reset_label, sonnet_total, limits["weekly_sonnet"],
+        ))
+        opus_total = int(fam_week.get("opus", {}).get("input", 0)) + int(fam_week.get("opus", {}).get("output", 0))
+        self._inner_layout.addWidget(self._bar_row(
+            "Opus only", reset_label, opus_total, limits["weekly_opus"],
+        ))
+        haiku_total = int(fam_week.get("haiku", {}).get("input", 0)) + int(fam_week.get("haiku", {}).get("output", 0))
+        if haiku_total > 0:
+            self._inner_layout.addWidget(self._bar_row(
+                "Haiku only", reset_label, haiku_total, limits["weekly_all"],
+            ))
+
+        # ---- Raw totals ----
+        self._inner_layout.addWidget(self._section_header("Raw Totals"))
+        self._inner_layout.addWidget(self._text(
+            f"Today                : "
+            f"{int((windows.get('today') or {}).get('input', 0)) + int((windows.get('today') or {}).get('output', 0)):>12,} tokens, "
+            f"{int((windows.get('today') or {}).get('turns', 0)):>5,} turns"
+        ))
+        self._inner_layout.addWidget(self._text(
+            f"This week            : "
+            f"{week_total:>12,} tokens, "
+            f"{int(week_bucket.get('turns', 0)):>5,} turns"
+        ))
+        self._inner_layout.addWidget(self._text(
+            f"All-time             : "
+            f"{int((windows.get('all') or {}).get('input', 0)) + int((windows.get('all') or {}).get('output', 0)):>12,} tokens, "
+            f"{int((windows.get('all') or {}).get('turns', 0)):>5,} turns, "
+            f"{int((windows.get('all') or {}).get('sessions', 0)):>3,} sessions"
+        ))
+
+        # ---- Footer with caveats ----
+        import datetime as _dt
+        stamp = _dt.datetime.fromtimestamp(data.get("generated_at", 0)).strftime("%H:%M:%S")
+        footer = QLabel(
+            f"Last updated: {stamp}  ·  scanned {data.get('files_scanned', 0)} transcripts.  "
+            "Bars are approximated from local transcripts against configurable caps "
+            "(see <b>config.json → widget.usage_limits</b>). For the exact "
+            "Anthropic-enforced percentages, click <b>Open Anthropic Usage Page</b>."
+        )
+        footer.setObjectName("u_muted"); footer.setWordWrap(True)
+        footer.setTextFormat(Qt.TextFormat.RichText)
+        footer.setContentsMargins(0, 16, 0, 0)
+        self._inner_layout.addWidget(footer)
 
         self._inner_layout.addStretch(1)
 
+    # ----- widget builders ---------------------------------------------
+
     def _section_header(self, text: str) -> QLabel:
-        lbl = QLabel(text); lbl.setObjectName("wlabel"); return lbl
+        lbl = QLabel(text); lbl.setObjectName("u_section")
+        return lbl
 
-    def _line(self, text: str) -> QLabel:
-        lbl = QLabel(text); lbl.setObjectName("wbody"); return lbl
+    def _text(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("color: #C6CCD8; font-family: Consolas, monospace; font-size: 11px; padding: 2px 0;")
+        return lbl
 
-    def _section(self, title: str, bucket: dict[str, Any]) -> QWidget:
-        wrap = QWidget()
-        v = QVBoxLayout(wrap); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
-        v.addWidget(self._section_header(title))
-        body = QLabel(
-            f"  Turns        : {bucket.get('turns',0):>10,}\n"
-            f"  Sessions     : {bucket.get('sessions',0):>10,}\n"
-            f"  Input (fresh): {bucket.get('input',0):>10,}  tokens\n"
-            f"  Output       : {bucket.get('output',0):>10,}  tokens\n"
-            f"  Cache Read   : {bucket.get('cache_read',0):>10,}  tokens\n"
-            f"  Cache Write  : {bucket.get('cache_write',0):>10,}  tokens"
-        )
-        body.setObjectName("wbody")
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        v.addWidget(body)
-        return wrap
+    def _bar_row(self, name: str, resets_label: str, value: int, cap: int) -> QWidget:
+        row = QWidget()
+        lay = QHBoxLayout(row); lay.setContentsMargins(0, 6, 0, 6); lay.setSpacing(12)
 
-    def _project_row(self, row: dict[str, Any]) -> QLabel:
-        name = row.get("project", "?")
-        in_out = row.get("input", 0) + row.get("output", 0)
-        turns = row.get("turns", 0)
-        sessions = row.get("sessions", 0)
-        label = QLabel(
-            f"  {name[:44]:<44}  {in_out:>12,} tk   "
-            f"{turns:>5,} turns   {sessions:>3,} sessions"
-        )
-        label.setObjectName("proj")
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        return label
+        name_col = QVBoxLayout(); name_col.setSpacing(1)
+        n = QLabel(name); n.setObjectName("u_rowname")
+        r = QLabel(resets_label); r.setObjectName("u_rowreset")
+        name_col.addWidget(n); name_col.addWidget(r)
+        nc_wrap = QWidget(); nc_wrap.setLayout(name_col)
+        nc_wrap.setFixedWidth(200)
+        lay.addWidget(nc_wrap)
+
+        pct = 0.0 if cap <= 0 else (100.0 * value / cap)
+        bar = QProgressBar(); bar.setObjectName("u_bar")
+        bar.setMinimum(0); bar.setMaximum(100)
+        bar.setValue(int(min(100, max(0, pct))))
+        bar.setTextVisible(False)
+        if pct >= 85:   bar.setProperty("urgency", "crit")
+        elif pct >= 60: bar.setProperty("urgency", "hot")
+        bar.style().unpolish(bar); bar.style().polish(bar)
+        lay.addWidget(bar, stretch=1)
+
+        p = QLabel(f"{pct:.0f}% used"); p.setObjectName("u_rowpct")
+        p.setFixedWidth(80); p.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(p)
+
+        bar.setToolTip(f"{value:,} tokens of {cap:,} cap  ({pct:.1f}% used)")
+        n.setToolTip(f"{value:,} tokens used against a configured cap of {cap:,}")
+        return row
+
+    def _time_until(self, ts: float | None, *, fallback: str = "") -> str:
+        if not ts:
+            return f"Resets — {fallback}" if fallback else "Resets —"
+        import datetime as _dt
+        target = _dt.datetime.fromtimestamp(ts)
+        now = _dt.datetime.now()
+        delta = target - now
+        if delta.total_seconds() <= 0:
+            return "Rolling — resets continuously"
+        total_min = int(delta.total_seconds() // 60)
+        if total_min < 60:
+            return f"Resets in {total_min} min"
+        hours, minutes = divmod(total_min, 60)
+        if hours < 24:
+            return f"Resets in {hours} hr {minutes} min"
+        days = hours // 24
+        return f"Resets {target.strftime('%a %H:%M')} ({days} days)"
+
+    # ----- actions ------------------------------------------------------
+
+    def _open_anthropic(self) -> None:
+        import webbrowser
+        try:
+            webbrowser.open("https://claude.ai/settings/usage", new=2)
+        except Exception:
+            pass
 
 
 class TrustSettings(QDialog):
@@ -2198,7 +2354,7 @@ class BeeperWidget(QMainWindow):
         menu.addAction(self._sound_action)
 
         menu.addSeparator()
-        u = QAction("Claude Usage Overview…", self); u.triggered.connect(self._show_usage); menu.addAction(u)
+        u = QAction("Session & Limits…", self); u.triggered.connect(self._show_usage); menu.addAction(u)
         h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
         s = QAction("Manage Trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
         c = QAction("Clear Session Trust", self); c.triggered.connect(self._clear_session_trust); menu.addAction(c)
