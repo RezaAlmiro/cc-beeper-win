@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from PySide6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect, QSize
-from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPainter, QPixmap, QRadialGradient, QColor
+from PySide6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect, QSize, QEvent
+from PySide6.QtGui import QAction, QCursor, QGuiApplication, QIcon, QMouseEvent, QPainter, QPixmap, QRadialGradient, QColor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QMainWindow, QMenu, QPushButton, QScrollArea, QSizeGrip,
@@ -619,15 +619,10 @@ class BeeperWidget(QMainWindow):
         meter_lay.addWidget(self.tok_lbl)
         root.addWidget(self.meter)
 
-        # Resize grip in the bottom-right corner (visible hint that the
-        # widget can be resized even though the window is frameless).
-        grip_row = QHBoxLayout(); grip_row.setContentsMargins(0, 0, 0, 0); grip_row.setSpacing(0)
-        grip_row.addStretch(1)
-        self._size_grip = QSizeGrip(container)
-        self._size_grip.setFixedSize(14, 14)
-        self._size_grip.setStyleSheet("background: rgba(72, 124, 255, 140); border-top-left-radius: 3px;")
-        grip_row.addWidget(self._size_grip, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
-        root.addLayout(grip_row)
+        # Resize is handled by edge-aware mouse tracking (see _RESIZE_MARGIN
+        # + eventFilter). The old bottom-right grip is gone — you can grab
+        # any edge or corner to resize, and the cursor hints when you're in
+        # the resize zone.
 
         # --- halo, state, tabs ---
         halo_color = w_cfg.get("halo_color", "#ff5e5e")
@@ -646,6 +641,16 @@ class BeeperWidget(QMainWindow):
         self._dock_corner = w_cfg.get("corner", "bottom-right")
         self._dock_margin = int(w_cfg.get("margin", 16))
         self._dock_to_corner()
+
+        # Edge-aware resize: hover near any edge → cursor hints the resize
+        # direction; press initiates a native window resize.
+        self._resize_margin = 6
+        self._active_edges = Qt.Edge(0)
+        self.setMouseTracking(True)
+        container.setMouseTracking(True)
+        # Install an event filter on the app so child-widget mouse events
+        # also participate (tabs/meter/sprite don't steal edge events).
+        QApplication.instance().installEventFilter(self)
         # Debounce config writes so we're not hammering disk while dragging.
         self._size_save_timer = QTimer(self)
         self._size_save_timer.setSingleShot(True)
@@ -679,10 +684,81 @@ class BeeperWidget(QMainWindow):
         super().resizeEvent(event)
         self.border_overlay.setGeometry(self.centralWidget().rect())
         self.halo.anchor_to(self.frameGeometry(), self._halo_extra)
-        # User-driven resize → persist new size to config after a short
-        # debounce so we're not saving mid-drag.
         if hasattr(self, "_size_save_timer"):
             self._size_save_timer.start()
+
+    # -- edge-aware resize -------------------------------------------------
+
+    def _edges_at(self, pos_in_window: QPoint) -> Qt.Edges:
+        m = self._resize_margin
+        r = self.rect()
+        edges = Qt.Edge(0)
+        if pos_in_window.x() <= m:
+            edges |= Qt.LeftEdge
+        elif pos_in_window.x() >= r.width() - m:
+            edges |= Qt.RightEdge
+        if pos_in_window.y() <= m:
+            edges |= Qt.TopEdge
+        elif pos_in_window.y() >= r.height() - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def _cursor_for_edges(self, edges: Qt.Edges) -> Qt.CursorShape | None:
+        if edges == (Qt.LeftEdge | Qt.TopEdge) or edges == (Qt.RightEdge | Qt.BottomEdge):
+            return Qt.SizeFDiagCursor
+        if edges == (Qt.RightEdge | Qt.TopEdge) or edges == (Qt.LeftEdge | Qt.BottomEdge):
+            return Qt.SizeBDiagCursor
+        if edges & Qt.LeftEdge or edges & Qt.RightEdge:
+            return Qt.SizeHorCursor
+        if edges & Qt.TopEdge or edges & Qt.BottomEdge:
+            return Qt.SizeVerCursor
+        return None
+
+    def eventFilter(self, obj, event) -> bool:
+        et = event.type()
+        # Only react to mouse events on widgets inside our window hierarchy.
+        if et not in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress,
+                      QEvent.Type.HoverMove, QEvent.Type.Leave):
+            return False
+        # eventFilter can receive QWindow objects too — isAncestorOf only
+        # works on QWidget, so fall through for non-widget events.
+        if not isinstance(obj, QWidget):
+            return False
+        if obj is not self and not self.isAncestorOf(obj):
+            return False
+        if et == QEvent.Type.Leave:
+            QGuiApplication.restoreOverrideCursor()
+            return False
+
+        # Map global cursor position into this window's coordinate space.
+        try:
+            global_pos = QCursor.pos()
+        except Exception:
+            return False
+        pos_in_window = self.mapFromGlobal(global_pos)
+        edges = self._edges_at(pos_in_window)
+
+        if et in (QEvent.Type.MouseMove, QEvent.Type.HoverMove):
+            shape = self._cursor_for_edges(edges)
+            if shape is not None:
+                if QGuiApplication.overrideCursor() is None or QGuiApplication.overrideCursor().shape() != shape:
+                    QGuiApplication.restoreOverrideCursor()
+                    QGuiApplication.setOverrideCursor(shape)
+            else:
+                QGuiApplication.restoreOverrideCursor()
+            return False
+
+        if et == QEvent.Type.MouseButtonPress and edges:
+            # Kick off a native window resize; swallow the click so child
+            # widgets (tabs/sprite) don't also get it.
+            try:
+                wh = self.windowHandle()
+                if wh is not None:
+                    wh.startSystemResize(edges)
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _persist_size(self) -> None:
         try:
