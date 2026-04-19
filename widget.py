@@ -1964,7 +1964,13 @@ class TrustSettings(QDialog):
 # The main HUD widget
 # ==========================================================================
 
-class BeeperWidget(QMainWindow):
+class BeeperWidget(QWidget):
+    """Top-level HUD. Intentionally a plain QWidget, not QMainWindow —
+    QMainWindow wraps the central widget in an opaque "central area"
+    child that paints the palette Window colour at the widget rect,
+    which covered our rounded GlassPanel's top corners with a square
+    fill. Plain QWidget has no such internal chrome, so the GlassPanel's
+    rounded silhouette is the only visible fill."""
     def __init__(self) -> None:
         super().__init__()
         self.cfg = load_cfg()
@@ -1995,12 +2001,16 @@ class BeeperWidget(QMainWindow):
         self.setWindowTitle("CC-Beeper-Win")
         self.setStyleSheet(button_css())
 
-        container = QWidget(self)
-        container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setCentralWidget(container)
+        # `container` is just `self` now. Kept as a local alias so the
+        # layout-building code below reads identically to the old
+        # QMainWindow version.
+        container = self
 
-        # Glass panel background (drawn behind all content)
+        # Glass panel background (drawn behind all content). Parented to
+        # self so it sits at z=0 behind everything we add next. resizeEvent
+        # keeps its geometry in sync with the window rect thereafter.
         self.glass = GlassPanel(container)
+        self.glass.lower()   # ensure below all siblings
         # NOTE: QGraphicsDropShadowEffect was removed — Qt's effect
         # pipeline rasterizes the widget's rectangular buffer as the
         # shadow source, casting a rectangular penumbra around the
@@ -2258,7 +2268,7 @@ class BeeperWidget(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.glass.setGeometry(self.centralWidget().rect())
+        self.glass.setGeometry(self.rect())
         if hasattr(self, "_size_save_timer"):
             self._size_save_timer.start()
         # Re-elide tab labels to their new widths — otherwise a grow-then-
