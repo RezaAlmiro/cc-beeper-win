@@ -182,8 +182,11 @@ before building.
   Scope: main widget chrome (glass, text, tabs, ticker, context bar,
   action circle idle, buttons, badge). Approval popup and dialogs
   stay light by design; UsageDialog stays dark by design.
-- **Compact mode** — single row (sprite + state badge + ticker), ~60 px
-  tall, for when you just need a heartbeat
+- ~~**Compact mode**~~ — **shipped.** Right-click → **Compact Mode**
+  collapses to a 72 px single-row heartbeat view (sprite + title +
+  state badge + ticker). Tab strip, context meter, token line and
+  bottom button row hide. Expanded height is remembered and restored
+  on toggle-off. Persists in `config.json` under `widget.compact`.
 - **Custom sprite pack** — drop your own 8-bit frames into
   `assets/custom/` and the widget uses those instead
 - **State-transition animations** — fade between sprites instead of

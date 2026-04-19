@@ -1436,6 +1436,11 @@ class BeeperWidget(QMainWindow):
         # pick up the correct palette at init time.
         self._theme_name = apply_theme(w_cfg.get("theme", "light"))
         self._theme_actions: dict[str, QAction] = {}
+        self._compact_mode = bool(w_cfg.get("compact", False))
+        # Height in expanded mode (restored when compact is turned off).
+        # Bumped to at least current configured height so users who've
+        # resized the widget larger don't lose their sizing.
+        self._expanded_height = max(180, int(w_cfg.get("height", 235)))
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -1530,8 +1535,11 @@ class BeeperWidget(QMainWindow):
         self.ticker = TickerLine()
         root.addWidget(self.ticker)
 
-        # Middle: context bar + time-style labels
-        mid = QHBoxLayout(); mid.setSpacing(8)
+        # Middle: context bar + time-style labels (wrapped so compact mode
+        # can hide the whole row atomically).
+        self.mid_row = QWidget(body_wrap)
+        self.mid_row.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        mid = QHBoxLayout(self.mid_row); mid.setContentsMargins(0, 0, 0, 0); mid.setSpacing(8)
         self.lbl_ctx_used = QLabel(""); self.lbl_ctx_used.setObjectName("ctxTime")
         self.lbl_ctx_used.setMinimumWidth(44)
         self.lbl_ctx_left = QLabel(""); self.lbl_ctx_left.setObjectName("ctxTime")
@@ -1542,15 +1550,17 @@ class BeeperWidget(QMainWindow):
         mid.addWidget(self.lbl_ctx_used)
         mid.addWidget(self.ctx_bar, 1)
         mid.addWidget(self.lbl_ctx_left)
-        root.addLayout(mid)
+        root.addWidget(self.mid_row)
 
         # Meta line (tokens in/out/cache)
         self.lbl_meta = QLabel(""); self.lbl_meta.setObjectName("meta")
         self.lbl_meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self.lbl_meta)
 
-        # Bottom controls
-        btns = QHBoxLayout(); btns.setSpacing(6)
+        # Bottom controls (wrapped so compact mode can hide the whole row)
+        self.btns_row = QWidget(body_wrap)
+        self.btns_row.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        btns = QHBoxLayout(self.btns_row); btns.setContentsMargins(0, 0, 0, 0); btns.setSpacing(6)
         self.btn_rename = QPushButton("✎ Rename"); self.btn_rename.setObjectName("smallBtn")
         self.btn_prev   = QPushButton("◀");         self.btn_prev.setObjectName("arrowCircle")
         self.btn_action = ActionCircle();           self.btn_action.clicked.connect(self._on_action_click)
@@ -1584,7 +1594,7 @@ class BeeperWidget(QMainWindow):
         btns.addWidget(self.btn_next)
         btns.addStretch()
         btns.addWidget(self.btn_slash)
-        root.addLayout(btns)
+        root.addWidget(self.btns_row)
 
         # ---------------- State ----------------
         self._pixmap_cache: dict[str, QPixmap] = {}
@@ -1648,6 +1658,11 @@ class BeeperWidget(QMainWindow):
         QApplication.instance().installEventFilter(self)
 
         self._timer = QTimer(self); self._timer.timeout.connect(self._tick); self._timer.start(POLL_MS)
+
+        # Apply compact mode last so the tray menu's checkmark is already
+        # wired. No-op if the user launched in expanded mode.
+        if self._compact_mode:
+            self._set_compact(True, save=False)
 
     # -- geometry ---------------------------------------------------------
 
@@ -2641,6 +2656,13 @@ class BeeperWidget(QMainWindow):
         self._sound_action.triggered.connect(self._toggle_sound)
         menu.addAction(self._sound_action)
 
+        # Compact mode toggle — single-row heartbeat view.
+        self._compact_action = QAction("Compact Mode", self)
+        self._compact_action.setCheckable(True)
+        self._compact_action.setChecked(self._compact_mode)
+        self._compact_action.triggered.connect(lambda checked: self._set_compact(bool(checked), save=True))
+        menu.addAction(self._compact_action)
+
         menu.addSeparator()
         u = QAction("Session Insights…", self); u.triggered.connect(self._show_usage); menu.addAction(u)
         h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
@@ -2703,6 +2725,56 @@ class BeeperWidget(QMainWindow):
             CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         except Exception:
             pass
+
+    def _set_compact(self, enable: bool, *, save: bool = False) -> None:
+        """Toggle single-row compact view: hide tab strip, subtitle, ctx
+        meter, token meta and the bottom buttons — leaves sprite + title
+        + state badge + ticker. Restores expanded layout and height when
+        turned off."""
+        enable = bool(enable)
+        # Widgets hidden in compact mode
+        hidable = [
+            getattr(self, "tabbar", None),
+            getattr(self, "lbl_subtitle", None),
+            getattr(self, "mid_row", None),
+            getattr(self, "lbl_meta", None),
+            getattr(self, "btns_row", None),
+        ]
+        for w in hidable:
+            if w is not None:
+                w.setVisible(not enable)
+
+        # Shrink / restore the sprite
+        if hasattr(self, "sprite"):
+            self.sprite.setFixedSize(36 if enable else 64, 36 if enable else 64)
+            self._pixmap_cache.clear()   # force re-scale on next tick
+
+        # Resize the window: compact = fixed 72 px tall; expanded = last
+        # remembered expanded height.
+        if enable:
+            if not self._compact_mode:
+                self._expanded_height = self.height()
+            self.resize(self.width(), 72)
+            self.setMinimumHeight(72)
+            self.setMaximumHeight(72)
+        else:
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.resize(self.width(), self._expanded_height)
+
+        self._compact_mode = enable
+        if hasattr(self, "_compact_action"):
+            self._compact_action.setChecked(enable)
+
+        if save:
+            try:
+                cfg = load_cfg()
+                cfg.setdefault("widget", {})["compact"] = enable
+                if not enable:
+                    cfg["widget"]["height"] = self._expanded_height
+                CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            except Exception:
+                pass
 
     def _toggle_sound(self, checked: bool) -> None:
         self._sound_enabled = bool(checked)
