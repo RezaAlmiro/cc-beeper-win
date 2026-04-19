@@ -22,8 +22,8 @@ from PySide6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve,
 from PySide6.QtGui import QAction, QCursor, QGuiApplication, QIcon, QMouseEvent, QPainter, QPixmap, QRadialGradient, QColor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMainWindow, QMenu, QPushButton, QScrollArea, QSizeGrip,
-    QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
+    QSizeGrip, QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget,
     QGraphicsOpacityEffect, QProgressBar,
 )
 
@@ -248,12 +248,33 @@ tool categories fly through without asking.</p>
 <h3 style="color:#F2F5FA">Manage trust…</h3>
 <p style="color:#9FEED9">View and remove any categories you've approved. Persistent approvals survive restarts; session approvals are forgotten when you quit the widget.</p>
 
+<h3 style="color:#F2F5FA">Slash commands on the tab (token hygiene)</h3>
+<p style="color:#9FEED9">Right-click any session tab → <b>Send slash command</b>:</p>
+<ul style="color:#F2F5FA; line-height:1.45">
+  <li><b>/compact</b> — Claude summarises the conversation so far and discards the verbose history, dropping your context % sharply while keeping the important facts. Use when the bar hits ~60–80%.</li>
+  <li><b>/clear</b> — reset the conversation entirely. Use between unrelated tasks so old context doesn't bloat the new one.</li>
+  <li><b>/cost</b> — prints input / output / cache token usage for the session.</li>
+  <li><b>/model</b> — switch models mid-session (e.g. drop from Opus to Sonnet for cheaper runs).</li>
+  <li><b>/resume</b> — bring an earlier session back to life instead of starting over.</li>
+</ul>
+<p style="color:#9FEED9">The widget refuses to send a slash command while the tab is red — Claude is mid-turn and the keystrokes would get mixed into whatever's currently being processed. Wait until the tab turns green.</p>
+
+<h3 style="color:#F2F5FA">Other ways to reduce tokens without hurting output</h3>
+<ul style="color:#F2F5FA; line-height:1.45">
+  <li>Watch the context bar — green under 60%, orange 60–85%, red above. Hit <b>/compact</b> around 60% and you rarely see red.</li>
+  <li><b>/clear</b> between unrelated tasks — don't carry setup context from task A into task B.</li>
+  <li>Prompt cache does most of the heavy lifting; huge cache_read values are FREE (cache hits cost ~10% of a normal read). Don't panic at the cache totals in the meter.</li>
+  <li>Long-running sessions with lots of Read/Grep typically have 90%+ cache-hit rates — don't compact those prematurely.</li>
+</ul>
+
 <h3 style="color:#F2F5FA">Shortcuts</h3>
 <ul style="color:#F2F5FA; line-height:1.45">
   <li>Single-click sprite → focus that session's terminal window / approve pending</li>
   <li>Drag sprite → reposition widget</li>
+  <li>Drag any edge → resize widget</li>
   <li>Click tray icon → show/hide widget</li>
-  <li>Right-click tray icon → menu (you're here)</li>
+  <li>Right-click tray icon → menu</li>
+  <li>Right-click a session tab → rename / send slash command</li>
 </ul>
 
 <p style="color:#6b7280; font-size:10px; padding-top:8px">
@@ -491,10 +512,11 @@ class TrustSettings(QDialog):
 # ---------------------------------------------------------------------------
 
 class SessionTab(QPushButton):
-    def __init__(self, session_id: str, rename_cb=None, parent=None) -> None:
+    def __init__(self, session_id: str, rename_cb=None, command_cb=None, parent=None) -> None:
         super().__init__(parent)
         self.session_id = session_id
         self._rename_cb = rename_cb
+        self._command_cb = command_cb
         self.setProperty("class", "sessionTab")
         self.setProperty("active", False)
         self.setProperty("flashing", False)
@@ -510,16 +532,29 @@ class SessionTab(QPushButton):
         self.setGraphicsEffect(self._fx)
 
     def _on_context_menu(self, pos) -> None:
-        if not self._rename_cb:
-            return
         menu = QMenu(self)
-        rename = QAction("Rename tab…", self)
-        rename.triggered.connect(lambda: self._rename_cb(self.session_id))
-        menu.addAction(rename)
-        clear = QAction("Clear custom name", self)
-        clear.triggered.connect(lambda: self._rename_cb(self.session_id, ""))
-        menu.addAction(clear)
-        menu.exec_(self.mapToGlobal(pos))
+        if self._command_cb:
+            cmd_menu = menu.addMenu("Send slash command")
+            for label, cmd in (
+                ("/compact  —  summarise & shrink context",          "/compact"),
+                ("/clear  —  reset conversation to zero",             "/clear"),
+                ("/cost  —  show token usage for this session",       "/cost"),
+                ("/model  —  switch model (e.g. to a cheaper tier)",  "/model"),
+                ("/resume  —  pick up an earlier session",            "/resume"),
+            ):
+                a = QAction(label, self)
+                a.triggered.connect(lambda _=False, c=cmd: self._command_cb(self.session_id, c))
+                cmd_menu.addAction(a)
+            menu.addSeparator()
+        if self._rename_cb:
+            rename = QAction("Rename tab…", self)
+            rename.triggered.connect(lambda: self._rename_cb(self.session_id))
+            menu.addAction(rename)
+            clear = QAction("Clear custom name", self)
+            clear.triggered.connect(lambda: self._rename_cb(self.session_id, ""))
+            menu.addAction(clear)
+        if menu.actions():
+            menu.exec_(self.mapToGlobal(pos))
 
     def _repolish(self) -> None:
         self.style().unpolish(self); self.style().polish(self)
@@ -841,7 +876,9 @@ class BeeperWidget(QMainWindow):
             full_label = custom or short_label(s.get("first_task", ""), s.get("cwd", ""), sid, limit=80)
             tab = self._tabs.get(sid)
             if tab is None:
-                tab = SessionTab(sid, rename_cb=self._rename_tab, parent=self.tabbar)
+                tab = SessionTab(sid, rename_cb=self._rename_tab,
+                                 command_cb=self._send_slash_command,
+                                 parent=self.tabbar)
                 tab.clicked.connect(lambda _=False, x=sid: self._select_session(x))
                 self.tabbar_layout.addWidget(tab, 1)
                 self._tabs[sid] = tab
@@ -879,6 +916,55 @@ class BeeperWidget(QMainWindow):
             lines.append(f"ctx: {stats.get('context_pct','?')}%  ({stats.get('current_context',0):,}/{stats.get('context_limit',0):,})")
             lines.append(f"in: {stats.get('total_input',0):,}  out: {stats.get('total_output',0):,}")
         return "\n".join(lines)
+
+    def _send_slash_command(self, sid: str, cmd: str) -> None:
+        """Type a slash command into a session's terminal.
+        Focuses the session's terminal via HWND, then simulates the keystrokes.
+        Refuses to run while Claude is mid-turn or waiting on tool approval —
+        that'd inject stray input into Claude's current input stream."""
+        snap = self._sessions_snapshot.get(sid) or {}
+        state = snap.get("state", "snoozing")
+        if state in {"working", "allow", "input"}:
+            QMessageBox.warning(
+                self, "Wait for Claude to finish",
+                f"This session is currently {state!r}.\n\n"
+                "Sending a slash command now would mix with Claude's in-progress input.\n"
+                "Wait for the tab to turn green first.",
+            )
+            return
+        hwnd = snap.get("terminal_hwnd")
+        if not hwnd:
+            QMessageBox.warning(
+                self, "No terminal found",
+                "Couldn't resolve this session's terminal window. The terminal may "
+                "have been closed or never registered via a hook.",
+            )
+            return
+        name = (snap.get("custom_name") or "").strip() or \
+               (snap.get("first_task") or "")[:60] or snap.get("session_id", "?")[:8]
+        reply = QMessageBox.question(
+            self, "Send slash command",
+            f"Send  {cmd}  to session:\n\n  {name}\n\n"
+            "Your terminal will be focused and the command will be typed + Enter.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._focus_terminal(hwnd)
+        # Give Windows ~220 ms to finish the foreground change before we type.
+        QTimer.singleShot(220, lambda: self._type_keystrokes(cmd))
+
+    def _type_keystrokes(self, cmd: str) -> None:
+        try:
+            import keyboard  # type: ignore
+            keyboard.write(cmd, delay=0.008)
+            keyboard.send("enter")
+        except Exception as e:
+            self._tray.showMessage(
+                "CC-Beeper-Win", f"slash-command send failed: {e}",
+                QSystemTrayIcon.MessageIcon.Warning, 3000,
+            )
 
     def _rename_tab(self, sid: str, forced_value: str | None = None) -> None:
         """Prompt the user for a new tab name (or clear if forced_value == '')."""
