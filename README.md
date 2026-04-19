@@ -12,10 +12,10 @@ ladder, context + token meters, and a small pixel-art pet bedroom.
 > hack, or rebuild for your own setup.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="CC-Beeper-Win in context on the desktop" width="900">
+  <img src="assets/screenshot.png" alt="CC-Beeper-Win in context on the desktop" width="600">
 </p>
 
-<p align="center"><i>Widget floating on the desktop. The /telegram:access tab has turned green because Claude just finished its turn; the meter shows Opus 4.7 at 42% of a 1M context window.</i></p>
+<p align="center"><i>Widget floating on the desktop (bottom-right). The /telegram:access tab has turned green because Claude just finished its turn; the meter shows Opus 4.7 at 42% of a 1M context window.</i></p>
 
 ## What it does
 
