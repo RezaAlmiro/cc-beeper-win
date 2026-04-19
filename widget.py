@@ -320,39 +320,95 @@ HELP_TEXT = """\
 <h2 style="color:#1F2430">CC-Beeper-Win — Help</h2>
 
 <p style="color:#60667A">
-A glass HUD that tracks your Claude Code sessions. One session visible
-at a time; arrow buttons cycle through them. Right-click the title for
-rename and session-specific slash commands.
+A Floating Glass HUD For Your Claude Code Sessions. One Session Is
+Displayed At A Time; Use The Arrow Buttons (◀ / ▶) To Browse The Others.
+The Widget Never Changes Claude's Output — It Only Gates Permission
+Prompts And Gives You Quick Access To Session-Level Controls.
 </p>
 
-<h3 style="color:#1F2430">State dot (top-right)</h3>
-<ul style="color:#1F2430; line-height:1.5">
-  <li><b style="color:#ff7a7a">red</b> — Claude is working</li>
-  <li><b style="color:#FFB74D">amber</b> — tool approval pending; click the centre button</li>
-  <li><b style="color:#4CD98D">green</b> — turn done, ready for your next prompt</li>
-  <li><b style="color:#7CE0A8">soft green</b> — turn done but Claude asked a follow-up, waiting on your reply</li>
+<h3 style="color:#1F2430">Anatomy Of The Widget</h3>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Sprite (top-left)</b> — The Pixel-Art Bedroom. Click It To Focus That Session's Terminal Window. If Claude Is Waiting On Tool Permission, Click Opens The Approval Popup Instead.</li>
+  <li><b>Title</b> — The Session's Name. Starts As Your First Prompt And You Can Rename It Anytime (Button Or Right-Click). Right-Clicking The Title Also Reveals A Per-Session Slash-Command Menu.</li>
+  <li><b>Subtitle</b> — Project Folder  ·  Model (E.g. "Cc-Beeper-Win  ·  Opus 4.7 (1M)").</li>
+  <li><b>State Dot (top-right)</b> — The Live Status Colour (See Below).</li>
+  <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
+  <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
+  <li><b>Action Button (Centre Bottom)</b> — Label Changes With State: "Approve?", "Reply", "Working…", "Done", "Focus". Click Does The Natural Thing For The Current State.</li>
+  <li><b>◀ / ▶ Arrows</b> — Cycle Through All Active Sessions.</li>
+  <li><b>⇣ Commands ▾</b> — Dropdown With /compact, /clear, /cost, /model, /resume. Focuses The Session's Terminal And Types The Command.</li>
+  <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
 </ul>
 
-<h3 style="color:#1F2430">Strategy · Mode · Trust</h3>
-<p style="color:#60667A">All tuned from the tray icon's right-click menu.
-Strategy is who decides permissions (Assist / Observer / Auto). Mode sets
-how lenient auto-allow is (Strict / Relaxed / Trusted / YOLO). Trust
-stores the categories you approved with "allow forever".</p>
-
-<h3 style="color:#1F2430">Slash commands (token hygiene)</h3>
-<p style="color:#60667A">The /compact button in the HUD summarises + shrinks the context for the active session. Right-click the title for /clear, /cost, /model, /resume. Disabled while the state dot is red.</p>
-<ul style="color:#1F2430; line-height:1.5">
-  <li><b>/compact</b> around 60% context = most efficient</li>
-  <li><b>/clear</b> between unrelated tasks</li>
-  <li>Cache reads cost ~10% of fresh reads — huge cache numbers are fine</li>
+<h3 style="color:#1F2430">State Dot Colours</h3>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b style="color:#ff7a7a">Red</b> — Claude Is Working. Tools Are Firing; Wait.</li>
+  <li><b style="color:#FFB74D">Amber</b> — A Tool Needs Your Approval. Click "Approve?" Or The Sprite To Open The 4-Way Ladder.</li>
+  <li><b style="color:#4CD98D">Green (Steady)</b> — Turn Finished. Nothing Else Expected — Ready For Your Next Prompt.</li>
+  <li><b style="color:#7CE0A8">Green (Soft)</b> — Turn Finished But Claude Asked A Follow-Up Question. Reply To Continue.</li>
+  <li><b style="color:#9AA3B2">Grey</b> — Idle / No Active Sessions.</li>
 </ul>
 
-<h3 style="color:#1F2430">Shortcuts</h3>
-<ul style="color:#1F2430; line-height:1.5">
-  <li>Click the sprite → focus that session's terminal / approve pending</li>
-  <li>Drag the panel body → move widget</li>
-  <li>Drag any edge → resize</li>
-  <li>Tray icon click → show/hide widget</li>
+<h3 style="color:#1F2430">The Approval Ladder</h3>
+<p style="color:#60667A">When Claude Needs To Run A Tool That Isn't Already Trusted, A Popup Offers Four Choices:</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Allow Once</b> — Single-Shot. Next Identical Call Will Ask Again.</li>
+  <li><b>Allow For This Session</b> — Approved Until You Quit The Widget. Use For "Do This Routinely During Today's Work".</li>
+  <li><b>Allow Forever (This Category)</b> — Written To Trust.json. Survives Restarts. Use For Categories You Never Want To Be Asked About Again.</li>
+  <li><b>Deny</b> — Tool Call Is Blocked And Claude Is Told Why.</li>
+</ul>
+
+<h3 style="color:#1F2430">Right-Click Menu (Anywhere On The Widget)</h3>
+<p style="color:#60667A">Brings Up Every Settings Control. Same Menu Is Available From The System-Tray Icon.</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Show / Hide Widget</b></li>
+  <li><b>Strategy</b> — Who Decides Permissions:
+    <ul>
+      <li><b>Assist</b> (default) — Widget Is The Permission UI With The 4-Way Ladder.</li>
+      <li><b>Observer</b> — Widget Only Watches. Claude's Own Permission Prompt Runs Unchanged In The Terminal.</li>
+      <li><b>Auto</b> — Headless Rule Engine + Optional Gemini Check. No Popup.</li>
+    </ul>
+  </li>
+  <li><b>Mode</b> — How Lenient The Auto-Allow Policy Is:
+    <ul>
+      <li><b>Strict</b> — Ask For Everything Except Pure Reads.</li>
+      <li><b>Relaxed</b> (default) — Reads + Git-Read Fly; Writes / Network / MCP-Write Ask.</li>
+      <li><b>Trusted</b> — Also Auto-Allows Project Writes And Local Git.</li>
+      <li><b>YOLO</b> — Allow Almost Everything (Safety Net Still Hard-Blocks rm -rf /, git push --force, Etc.).</li>
+    </ul>
+  </li>
+  <li><b>Opacity</b> — Presets 60 / 75 / 85 / 95 / 100 % Or Custom Slider. Persists Across Restarts.</li>
+  <li><b>Help</b> — This Dialog.</li>
+  <li><b>Manage Trust</b> — View And Remove Any "Allow Forever" Or Session-Scoped Categories.</li>
+  <li><b>Clear Session Trust</b> — Forget Every Session-Only Approval Immediately.</li>
+  <li><b>Quit Widget</b> — Closes The Widget Process. The Hook Server Keeps Running So Your Claude Sessions Are Unaffected.</li>
+</ul>
+
+<h3 style="color:#1F2430">Slash Commands (Token Hygiene)</h3>
+<p style="color:#60667A">Pick From The <b>⇣ Commands ▾</b> Dropdown Or Right-Click The Title:</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>/compact</b> — Claude Summarises The Conversation So Far And Drops The Verbose History. Use Around 60–80 % Context For Minimal Info Loss.</li>
+  <li><b>/clear</b> — Reset Conversation. Use Between Unrelated Tasks So Old Context Doesn't Bloat The New One.</li>
+  <li><b>/cost</b> — Prints Input / Output / Cache Token Usage For The Session.</li>
+  <li><b>/model</b> — Switch Model Mid-Session (E.g. Drop From Opus To Sonnet For Cheaper Runs).</li>
+  <li><b>/resume</b> — Pick Up An Earlier Session Instead Of Starting Over.</li>
+</ul>
+<p style="color:#60667A">The Widget Refuses To Send A Slash Command While The State Dot Is Red — The Keystrokes Would Be Mixed Into Claude's Live Input Stream. Wait For Green.</p>
+
+<h3 style="color:#1F2430">Token-Saving Tips (Without Hurting Output)</h3>
+<ul style="color:#1F2430; line-height:1.6">
+  <li>Watch The Context Bar. Hit <b>/compact</b> Around 60 % And You Rarely See Red.</li>
+  <li><b>/clear</b> Between Unrelated Tasks — Don't Carry Setup From Task A Into Task B.</li>
+  <li>Cache Reads Cost About 10 % Of A Fresh Read — Huge Cache Numbers In The Meta Line Are Usually Good, Not Waste.</li>
+  <li>Drop To A Cheaper Model With <b>/model</b> For Routine Edits; Promote Back To Opus For Hard Reasoning.</li>
+</ul>
+
+<h3 style="color:#1F2430">Move, Resize, Relaunch</h3>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Drag The Panel Body</b> → Move The Widget.</li>
+  <li><b>Drag Any Edge Or Corner</b> → Resize. Cursor Hints The Direction When You're In The Resize Zone. New Size Persists.</li>
+  <li><b>Tray Icon Click</b> → Show / Hide Widget.</li>
+  <li><b>If The Widget Crashes Or Is Closed</b>: Double-Click <b>start_widget.bat</b> (Widget Only) Or <b>start_all.bat</b> (Widget + Server). <b>install_launcher.bat</b> Places A Desktop Shortcut You Can Pin To Taskbar.</li>
 </ul>
 
 <p style="color:#9AA3B2; font-size:10px; padding-top:8px">
