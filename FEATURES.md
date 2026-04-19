@@ -177,8 +177,11 @@ before building.
 ### Visual / UX
 - **True backdrop blur** via Windows 11 DWM acrylic or mica — right now
   it's a semi-opaque fake; real blur would show the wallpaper through
-- **Dark-glass theme** — current palette is warm off-white; a dark
-  variant for dark-desktop users
+- ~~**Dark-glass theme**~~ — **shipped.** Right-click → Theme → Light /
+  Dark. Palette swap is live (no restart) and persists in `config.json`.
+  Scope: main widget chrome (glass, text, tabs, ticker, context bar,
+  action circle idle, buttons, badge). Approval popup and dialogs
+  stay light by design; UsageDialog stays dark by design.
 - **Compact mode** — single row (sprite + state badge + ticker), ~60 px
   tall, for when you just need a heartbeat
 - **Custom sprite pack** — drop your own 8-bit frames into

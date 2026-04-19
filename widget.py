@@ -77,18 +77,84 @@ STATE_COLOR = {
 }
 
 # --------------------------------------------------------------------------
-# Glass HUD palette  (warm light, matches Apple-style liquid glass reference)
+# Glass HUD palette — two variants share the same structural keys.
+# ACTIVE is mutated in-place by apply_theme(); paintEvents and CSS builders
+# read from it at render time, so a live swap is possible without restart.
 # --------------------------------------------------------------------------
 
-BG_RGBA         = (246, 243, 238, 225)   # translucent warm off-white
-HIGHLIGHT_RGBA  = (255, 255, 255, 90)    # top-edge inner highlight
-BORDER_RGBA     = (255, 255, 255, 120)   # outer hairline
-TEXT_TITLE      = "#1F2430"
-TEXT_SUBTITLE   = "#60667A"
-TEXT_META       = "#7A8299"
-BAR_TRACK       = "#d7d2c8"
-BAR_FILL        = "#1F2430"
-CORNER_RADIUS   = 22
+CORNER_RADIUS = 22
+
+LIGHT_THEME: dict[str, Any] = {
+    "bg_rgba":           (246, 243, 238, 225),
+    "highlight_rgba":    (255, 255, 255, 90),
+    "border_rgba":       (255, 255, 255, 120),
+    "text_title":        "#1F2430",
+    "text_subtitle":     "#60667A",
+    "text_meta":         "#7A8299",
+    "bar_track":         "#d7d2c8",
+    "bar_fill":          "#1F2430",
+    "btn_bg":            "rgba(255, 255, 255, 150)",
+    "btn_bg_hover":      "rgba(255, 255, 255, 220)",
+    "btn_border":        "rgba(255, 255, 255, 200)",
+    "btn_fg":            "#1F2430",
+    "tab_bg":            "rgba(255, 255, 255, 110)",
+    "tab_bg_hover":      "rgba(255, 255, 255, 180)",
+    "tab_bg_active":     "rgba(255, 255, 255, 245)",
+    "tab_border":        "rgba(0, 0, 0, 40)",
+    "tab_border_active": "rgba(0, 0, 0, 75)",
+    "tab_fg":            "#1F2430",
+    "tab_fg_active":     "#0B1020",
+    "idle_circle_bg":    "#ffffff",
+    "idle_circle_fg":    "#1F2430",
+    "idle_circle_border":"#bfc4cc",
+    "ticker_fg":         "#1F2430",
+    "arc_fg":            "#5a3b00",
+    "badge_idle_bg":     "#ffffff",
+    "badge_idle_fg":     "#1F2430",
+    "hover_outline":     "#1F2430",
+}
+
+DARK_THEME: dict[str, Any] = {
+    "bg_rgba":           (24, 27, 36, 230),   # deep blue-grey translucent
+    "highlight_rgba":    (255, 255, 255, 28),
+    "border_rgba":       (255, 255, 255, 40),
+    "text_title":        "#F2F5FA",
+    "text_subtitle":     "#A8B0BF",
+    "text_meta":         "#7A8299",
+    "bar_track":         "#2a2f3d",
+    "bar_fill":          "#E4E8F2",
+    "btn_bg":            "rgba(255, 255, 255, 22)",
+    "btn_bg_hover":      "rgba(255, 255, 255, 48)",
+    "btn_border":        "rgba(255, 255, 255, 55)",
+    "btn_fg":            "#F2F5FA",
+    "tab_bg":            "rgba(255, 255, 255, 16)",
+    "tab_bg_hover":      "rgba(255, 255, 255, 34)",
+    "tab_bg_active":     "rgba(255, 255, 255, 55)",
+    "tab_border":        "rgba(255, 255, 255, 45)",
+    "tab_border_active": "rgba(255, 255, 255, 100)",
+    "tab_fg":            "#E4E8F2",
+    "tab_fg_active":     "#FFFFFF",
+    "idle_circle_bg":    "#3a3f4e",
+    "idle_circle_fg":    "#F2F5FA",
+    "idle_circle_border":"#5a6070",
+    "ticker_fg":         "#E4E8F2",
+    "arc_fg":            "#FFD591",
+    "badge_idle_bg":     "#3a3f4e",
+    "badge_idle_fg":     "#F2F5FA",
+    "hover_outline":     "#E4E8F2",
+}
+
+ACTIVE: dict[str, Any] = dict(LIGHT_THEME)
+
+
+def apply_theme(name: str) -> str:
+    """Swap ACTIVE to the requested theme. Returns the theme name actually
+    applied (falls back to 'light' if unknown)."""
+    name = (name or "light").lower()
+    src = DARK_THEME if name == "dark" else LIGHT_THEME
+    ACTIVE.clear()
+    ACTIVE.update(src)
+    return "dark" if src is DARK_THEME else "light"
 
 
 def load_cfg() -> dict[str, Any]:
@@ -220,13 +286,17 @@ class GlassPanel(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
 
+        bg_rgba = ACTIVE["bg_rgba"]
+        hl_rgba = ACTIVE["highlight_rgba"]
+        br_rgba = ACTIVE["border_rgba"]
+
         path = QPainterPath()
         path.addRoundedRect(r, CORNER_RADIUS, CORNER_RADIUS)
 
         # Base translucent fill with a subtle top-to-bottom gradient
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
-        g.setColorAt(0.0, QColor(*[c if i < 3 else BG_RGBA[3] + 10 for i, c in enumerate(BG_RGBA)]))
-        g.setColorAt(1.0, QColor(*BG_RGBA))
+        g.setColorAt(0.0, QColor(*[c if i < 3 else min(255, bg_rgba[3] + 10) for i, c in enumerate(bg_rgba)]))
+        g.setColorAt(1.0, QColor(*bg_rgba))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(g))
         p.drawPath(path)
@@ -236,13 +306,13 @@ class GlassPanel(QWidget):
         hl_path = QPainterPath()
         hl_path.addRoundedRect(hl_rect, CORNER_RADIUS - 6, CORNER_RADIUS - 6)
         hg = QLinearGradient(hl_rect.topLeft(), hl_rect.bottomLeft())
-        hg.setColorAt(0.0, QColor(*HIGHLIGHT_RGBA))
+        hg.setColorAt(0.0, QColor(*hl_rgba))
         hg.setColorAt(1.0, QColor(255, 255, 255, 0))
         p.setBrush(QBrush(hg))
         p.drawPath(hl_path)
 
         # Hairline outer border
-        p.setPen(QPen(QColor(*BORDER_RGBA), 1))
+        p.setPen(QPen(QColor(*br_rgba), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
 
@@ -316,7 +386,7 @@ class TickerLine(QWidget):
         y = (self.height() + fm.ascent() - fm.descent()) // 2
         text = self._ticker_string()
         text_w = fm.horizontalAdvance(text)
-        p.setPen(QColor("#1F2430"))
+        p.setPen(QColor(ACTIVE["ticker_fg"]))
         if text_w <= self.width():
             p.drawText(0, y, self._text)
             return
@@ -389,7 +459,12 @@ class ActionCircle(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        bg_hex, fg_hex, border_hex = self._PALETTE[self._mode]
+        if self._mode == "idle":
+            bg_hex = ACTIVE["idle_circle_bg"]
+            fg_hex = ACTIVE["idle_circle_fg"]
+            border_hex = ACTIVE["idle_circle_border"]
+        else:
+            bg_hex, fg_hex, border_hex = self._PALETTE[self._mode]
         # Circle rect — leave margin for halo / stroke.
         margin = 4
         rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
@@ -424,7 +499,7 @@ class ActionCircle(QWidget):
             arc_rect = rect.adjusted(4, 4, -4, -4)
             start = (-self._tick * 6) % 360          # negative = clockwise
             span = 70                                  # degrees of arc
-            pen = QPen(QColor("#5a3b00"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            pen = QPen(QColor(ACTIVE["arc_fg"]), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
             # Qt angles are in 1/16 of a degree
             p.drawArc(arc_rect, int(start * 16), int(-span * 16))
@@ -442,44 +517,46 @@ class ActionCircle(QWidget):
 # Small icon button with glass-friendly pressed state
 # ==========================================================================
 
-BUTTON_CSS = """
-QPushButton#iconBtn {
-    background: rgba(255, 255, 255, 150);
-    color: #1F2430;
-    border: 1px solid rgba(255, 255, 255, 200);
+def button_css() -> str:
+    t = ACTIVE
+    return f"""
+QPushButton#iconBtn {{
+    background: {t['btn_bg']};
+    color: {t['btn_fg']};
+    border: 1px solid {t['btn_border']};
     border-radius: 18px;
     font-family: 'Segoe UI', sans-serif;
     font-size: 13px; font-weight: 700;
     padding: 4px 10px;
-}
-QPushButton#iconBtn:hover {
-    background: rgba(255, 255, 255, 220);
-    border: 1px solid #1F2430;
-}
-QPushButton#iconBtn[accent="red"]   { background: #FF5E5E; color: white; border: 1px solid #ff2e2e; }
-QPushButton#iconBtn[accent="green"] { background: #4CD98D; color: #062615; border: 1px solid #2fa35a; }
-QPushButton#iconBtn[accent="amber"] { background: #FFB74D; color: #2a1d00; border: 1px solid #c78a2a; }
+}}
+QPushButton#iconBtn:hover {{
+    background: {t['btn_bg_hover']};
+    border: 1px solid {t['hover_outline']};
+}}
+QPushButton#iconBtn[accent="red"]   {{ background: #FF5E5E; color: white; border: 1px solid #ff2e2e; }}
+QPushButton#iconBtn[accent="green"] {{ background: #4CD98D; color: #062615; border: 1px solid #2fa35a; }}
+QPushButton#iconBtn[accent="amber"] {{ background: #FFB74D; color: #2a1d00; border: 1px solid #c78a2a; }}
 
 /* Matching-size circular prev/next arrows. */
-QPushButton#arrowCircle {
+QPushButton#arrowCircle {{
     min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px;
     border-radius: 18px;
-    border: 1px solid rgba(255, 255, 255, 220);
-    background: rgba(255, 255, 255, 170);
-    color: #1F2430;
+    border: 1px solid {t['btn_border']};
+    background: {t['btn_bg']};
+    color: {t['btn_fg']};
     font-family: 'Segoe UI', sans-serif;
     font-size: 14px; font-weight: 800;
-}
-QPushButton#arrowCircle:hover { border: 1px solid #1F2430; background: rgba(255,255,255,230); }
+}}
+QPushButton#arrowCircle:hover {{ border: 1px solid {t['hover_outline']}; background: {t['btn_bg_hover']}; }}
 
 /* Browser-style session tabs integrated into the top of the glass panel.
    Tabs fill nearly the full height of the strip so labels are legible;
    the active tab body blends into the panel below. Top-edge stripe is
    state-coloured. */
-QPushButton.miniTab {
-    background: rgba(255, 255, 255, 110);
-    color: #1F2430;
-    border: 1px solid rgba(0, 0, 0, 40);
+QPushButton.miniTab {{
+    background: {t['tab_bg']};
+    color: {t['tab_fg']};
+    border: 1px solid {t['tab_border']};
     border-bottom: none;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
@@ -490,40 +567,38 @@ QPushButton.miniTab {
     padding: 3px 10px 12px 10px;
     min-height: 28px;
     min-width: 40px;
-}
-QPushButton.miniTab:hover {
-    background: rgba(255, 255, 255, 180);
-}
-QPushButton.miniTab[active="true"] {
-    background: rgba(255, 255, 255, 245);
-    color: #0B1020;
-    border: 1px solid rgba(0, 0, 0, 75);
+}}
+QPushButton.miniTab:hover {{
+    background: {t['tab_bg_hover']};
+}}
+QPushButton.miniTab[active="true"] {{
+    background: {t['tab_bg_active']};
+    color: {t['tab_fg_active']};
+    border: 1px solid {t['tab_border_active']};
     border-bottom: none;
     font-weight: 800;
     padding: 4px 10px 14px 10px;
-}
+}}
 /* State-colour stripe on the top edge — 3 px for inactive, 4 px for active.
    Keys mirror the action-circle's state names exactly. */
-QPushButton.miniTab[stateKey="idle"]     { border-top: 3px solid #9AA3B2; }
-QPushButton.miniTab[stateKey="done"]     { border-top: 3px solid #4CD98D; }
-QPushButton.miniTab[stateKey="working"]  { border-top: 3px solid #FFB74D; }
-QPushButton.miniTab[stateKey="input"]    { border-top: 3px solid #3DA1FF; }
-QPushButton.miniTab[stateKey="approval"] { border-top: 3px solid #FF7A00; }
-QPushButton.miniTab[stateKey="error"]    { border-top: 3px solid #8B0000; }
-QPushButton.miniTab[active="true"][stateKey="idle"]     { border-top: 4px solid #9AA3B2; }
-QPushButton.miniTab[active="true"][stateKey="done"]     { border-top: 4px solid #4CD98D; }
-QPushButton.miniTab[active="true"][stateKey="working"]  { border-top: 4px solid #FFB74D; }
-QPushButton.miniTab[active="true"][stateKey="input"]    { border-top: 4px solid #3DA1FF; }
-QPushButton.miniTab[active="true"][stateKey="approval"] { border-top: 4px solid #FF7A00; }
-QPushButton.miniTab[active="true"][stateKey="error"]    { border-top: 4px solid #8B0000; }
+QPushButton.miniTab[stateKey="idle"]     {{ border-top: 3px solid #9AA3B2; }}
+QPushButton.miniTab[stateKey="done"]     {{ border-top: 3px solid #4CD98D; }}
+QPushButton.miniTab[stateKey="working"]  {{ border-top: 3px solid #FFB74D; }}
+QPushButton.miniTab[stateKey="input"]    {{ border-top: 3px solid #3DA1FF; }}
+QPushButton.miniTab[stateKey="approval"] {{ border-top: 3px solid #FF7A00; }}
+QPushButton.miniTab[stateKey="error"]    {{ border-top: 3px solid #8B0000; }}
+QPushButton.miniTab[active="true"][stateKey="idle"]     {{ border-top: 4px solid #9AA3B2; }}
+QPushButton.miniTab[active="true"][stateKey="done"]     {{ border-top: 4px solid #4CD98D; }}
+QPushButton.miniTab[active="true"][stateKey="working"]  {{ border-top: 4px solid #FFB74D; }}
+QPushButton.miniTab[active="true"][stateKey="input"]    {{ border-top: 4px solid #3DA1FF; }}
+QPushButton.miniTab[active="true"][stateKey="approval"] {{ border-top: 4px solid #FF7A00; }}
+QPushButton.miniTab[active="true"][stateKey="error"]    {{ border-top: 4px solid #8B0000; }}
 
-/* Playlist / session-picker button on the far left of the tab strip.
-   Fixed narrow width so it doesn't steal space from the tabs; same
-   visual weight as a tab so the strip reads as one continuous row. */
-QPushButton#playlistBtn {
-    background: rgba(255, 255, 255, 150);
-    color: #1F2430;
-    border: 1px solid rgba(0, 0, 0, 40);
+/* Playlist / session-picker button on the far left of the tab strip. */
+QPushButton#playlistBtn {{
+    background: {t['btn_bg']};
+    color: {t['btn_fg']};
+    border: 1px solid {t['tab_border']};
     border-bottom: none;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
@@ -534,50 +609,55 @@ QPushButton#playlistBtn {
     padding: 6px 6px;
     min-height: 28px;
     min-width: 26px; max-width: 28px;
-}
-QPushButton#playlistBtn:hover { background: rgba(255, 255, 255, 220); }
+}}
+QPushButton#playlistBtn:hover {{ background: {t['btn_bg_hover']}; }}
 
-QPushButton#smallBtn {
-    background: transparent; color: #1F2430;
+QPushButton#smallBtn {{
+    background: transparent; color: {t['btn_fg']};
     border: none; font-family: 'Segoe UI', sans-serif;
     font-size: 12px; font-weight: 600; padding: 2px 6px;
     border-radius: 10px;
-}
-QPushButton#smallBtn:hover { background: rgba(255, 255, 255, 200); }
+}}
+QPushButton#smallBtn:hover {{ background: {t['btn_bg_hover']}; }}
 
-QLabel#title {
-    color: #1F2430; font-family: 'Segoe UI', sans-serif;
+QLabel#title {{
+    color: {t['text_title']}; font-family: 'Segoe UI', sans-serif;
     font-size: 16px; font-weight: 700;
-}
-QLabel#subtitle {
-    color: #60667A; font-family: 'Segoe UI', sans-serif;
+}}
+QLabel#subtitle {{
+    color: {t['text_subtitle']}; font-family: 'Segoe UI', sans-serif;
     font-size: 11px; font-weight: 500;
-}
-QLabel#meta {
-    color: #7A8299; font-family: 'Segoe UI', sans-serif;
+}}
+QLabel#meta {{
+    color: {t['text_meta']}; font-family: 'Segoe UI', sans-serif;
     font-size: 10px; font-weight: 500;
-}
-/* State badge at the top-right of the HUD. Pill-shape, coloured
-   background matching the action circle + state-specific text. */
-QLabel#stateBadge {
+}}
+/* State badge at the top-right of the HUD. Pill-shape. */
+QLabel#stateBadge {{
     font-family: 'Segoe UI', sans-serif;
     font-size: 11px; font-weight: 800;
     padding: 4px 10px 4px 10px;
     border-radius: 11px;
     letter-spacing: 0.5px;
-}
-QLabel#ctxTime {
-    color: #1F2430; font-family: 'Segoe UI', sans-serif;
+}}
+QLabel#ctxTime {{
+    color: {t['text_title']}; font-family: 'Segoe UI', sans-serif;
     font-size: 11px; font-weight: 600;
-}
-QProgressBar#ctxBar {
-    background: #d7d2c8; border: none; border-radius: 4px; height: 8px;
+}}
+QProgressBar#ctxBar {{
+    background: {t['bar_track']}; border: none; border-radius: 4px; height: 8px;
     text-align: center; color: transparent;
-}
-QProgressBar#ctxBar::chunk { background: #1F2430; border-radius: 4px; }
-QProgressBar#ctxBar[state="hot"]::chunk  { background: #ff8a4d; }
-QProgressBar#ctxBar[state="crit"]::chunk { background: #ff2e2e; }
+}}
+QProgressBar#ctxBar::chunk {{ background: {t['bar_fill']}; border-radius: 4px; }}
+QProgressBar#ctxBar[state="hot"]::chunk  {{ background: #ff8a4d; }}
+QProgressBar#ctxBar[state="crit"]::chunk {{ background: #ff2e2e; }}
 """
+
+
+# Backwards-compatibility shim: dialogs built at import time reference
+# BUTTON_CSS. We keep it as a string of the current theme at import time;
+# the BeeperWidget re-applies button_css() live on theme change.
+BUTTON_CSS = button_css()
 
 
 # --------------------------------------------------------------------------
@@ -1352,6 +1432,11 @@ class BeeperWidget(QMainWindow):
         self.w_px = int(w_cfg.get("width", 380))
         self.h_px = int(w_cfg.get("height", 180))
 
+        # Theme — applied before any stylesheet construction so all widgets
+        # pick up the correct palette at init time.
+        self._theme_name = apply_theme(w_cfg.get("theme", "light"))
+        self._theme_actions: dict[str, QAction] = {}
+
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -1359,7 +1444,7 @@ class BeeperWidget(QMainWindow):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowTitle("CC-Beeper-Win")
-        self.setStyleSheet(BUTTON_CSS)
+        self.setStyleSheet(button_css())
 
         container = QWidget(self)
         container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -1603,8 +1688,9 @@ class BeeperWidget(QMainWindow):
         return self._pixmap_cache[fname]
 
     # Maps our internal state string → (display text, bg, fg) for the badge.
+    # "snoozing" (idle) is theme-dependent — resolved at paint time.
     _BADGE_PALETTE = {
-        "snoozing":       ("IDLE",     "#ffffff", "#1F2430"),
+        "snoozing":       ("IDLE",     None,      None),
         "working":        ("WORKING",  "#FFB74D", "#2a1d00"),
         "done":           ("DONE",     "#4CD98D", "#062615"),
         "awaiting_input": ("INPUT",    "#3DA1FF", "#001830"),
@@ -1618,8 +1704,10 @@ class BeeperWidget(QMainWindow):
     def _set_state_badge(self, state: str, *, has_pending: bool = False):
         # Pending approval always wins over underlying state.
         key = "allow" if has_pending else state
-        text, bg, fg = self._BADGE_PALETTE.get(key, ("IDLE", "#ffffff", "#1F2430"))
-        border = "#00000022"
+        text, bg, fg = self._BADGE_PALETTE.get(key, ("IDLE", None, None))
+        if bg is None or fg is None:
+            bg = ACTIVE["badge_idle_bg"]; fg = ACTIVE["badge_idle_fg"]
+        border = "#ffffff22" if ACTIVE["bg_rgba"] == DARK_THEME["bg_rgba"] else "#00000022"
         self.state_badge.setText(text)
         self.state_badge.setStyleSheet(
             f"background: {bg}; color: {fg};"
@@ -2536,6 +2624,16 @@ class BeeperWidget(QMainWindow):
         custom = QAction("Custom…", self); custom.triggered.connect(self._set_opacity_custom)
         opacity_menu.addAction(custom)
 
+        # Theme submenu (Light / Dark)
+        theme_menu = menu.addMenu(f"Theme:  {self._theme_name.capitalize()}")
+        self._theme_menu = theme_menu
+        for tname, tlabel in (("light", "Light  (Warm Glass)"), ("dark", "Dark  (Deep Glass)")):
+            a = QAction(tlabel, self); a.setCheckable(True)
+            a.setChecked(tname == self._theme_name)
+            a.triggered.connect(lambda _=False, v=tname: self._set_theme(v))
+            theme_menu.addAction(a)
+            self._theme_actions[tname] = a
+
         # Sound toggle
         self._sound_action = QAction("Sound Cues", self)
         self._sound_action.setCheckable(True)
@@ -2575,6 +2673,36 @@ class BeeperWidget(QMainWindow):
                 CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
             except Exception:
                 pass
+
+    def _set_theme(self, name: str) -> None:
+        """Swap Light/Dark palette live. Reapplies stylesheet to the main
+        window, prods painters to refresh, and persists the choice."""
+        applied = apply_theme(name)
+        self._theme_name = applied
+        # Re-apply the top-level stylesheet; all child widgets inherit.
+        self.setStyleSheet(button_css())
+        # Force repaint of the custom-painted surfaces (they read ACTIVE
+        # at paint time — just need a nudge).
+        for w in (self.glass, self.ticker, self.btn_action):
+            try: w.update()
+            except Exception: pass
+        # Badge will re-theme on the next 500 ms poll; no manual refresh.
+        # Re-skin tabs (stylesheet-driven, already re-applied by parent
+        # setStyleSheet, but force polish so [active=true] updates).
+        for btn in self._tab_buttons.values():
+            btn.style().unpolish(btn); btn.style().polish(btn)
+        # Menu label + checkmarks
+        if hasattr(self, "_theme_menu"):
+            self._theme_menu.setTitle(f"Theme:  {applied.capitalize()}")
+        for v, act in self._theme_actions.items():
+            act.setChecked(v == applied)
+        # Persist
+        try:
+            cfg = load_cfg()
+            cfg.setdefault("widget", {})["theme"] = applied
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
 
     def _toggle_sound(self, checked: bool) -> None:
         self._sound_enabled = bool(checked)
