@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import math
+import struct
+import time
+import wave
 import requests
 from PySide6.QtCore import (
     Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect, QSize,
@@ -43,9 +46,11 @@ from PySide6.QtWidgets import (
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
+SOUNDS_DIR = ASSETS / "sounds"
 CONFIG_PATH = ROOT / "config.json"
 PORT_FILE = ROOT / ".port"
 POLL_MS = 500
+SOUND_COOLDOWN_S = 1.5   # throttle re-plays of the same sound per session
 
 STATE_TO_SPRITE = {
     "snoozing":       "snoozing.png",
@@ -102,6 +107,65 @@ def server_port() -> int:
 
 def server_url(path: str) -> str:
     return f"http://127.0.0.1:{server_port()}{path}"
+
+
+def _synth_chime(path: Path, notes: list[tuple[float, float, float]],
+                 sample_rate: int = 44100) -> None:
+    """Render a simple bell/chime WAV by summing a fundamental + one octave
+    overtone with an attack/decay/release envelope. `notes` is a list of
+    (frequency Hz, duration s, gain 0..1) played in sequence."""
+    frames = bytearray()
+    for freq, dur, gain in notes:
+        n = int(sample_rate * dur)
+        attack = max(1, int(n * 0.015))
+        decay = max(1, int(n * 0.22))
+        release = max(1, n - attack - decay)
+        for i in range(n):
+            if i < attack:
+                env = i / attack
+            elif i < attack + decay:
+                env = 1.0 - 0.25 * ((i - attack) / decay)
+            else:
+                env = 0.75 * math.exp(-3.2 * ((i - attack - decay) / release))
+            t = i / sample_rate
+            sample = (
+                math.sin(2 * math.pi * freq * t)
+                + 0.28 * math.sin(2 * math.pi * freq * 2 * t)
+                + 0.08 * math.sin(2 * math.pi * freq * 3 * t)
+            )
+            value = int(32767 * 0.55 * gain * env * sample)
+            frames += struct.pack("<h", max(-32768, min(32767, value)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(bytes(frames))
+
+
+# Two melodic cue patterns. Both resolve to E5 so they're consonant if one
+# plays just after the other.
+#   Approve → E5 → C5  (attention-getting ding-dong, descending)
+#   Input   → A4 → C#5 → E5  (rising question intonation, friendlier)
+APPROVE_NOTES = [(659.25, 0.22, 1.0), (523.25, 0.34, 0.9)]
+INPUT_NOTES   = [(440.00, 0.14, 0.8), (554.37, 0.14, 0.85), (659.25, 0.26, 0.9)]
+
+
+def ensure_sounds() -> dict[str, Path]:
+    """Render the two WAVs into ASSETS/sounds on first run. Returns
+    {'approve': path, 'input': path}."""
+    out = {
+        "approve": SOUNDS_DIR / "approve.wav",
+        "input":   SOUNDS_DIR / "input.wav",
+    }
+    try:
+        if not out["approve"].exists():
+            _synth_chime(out["approve"], APPROVE_NOTES)
+        if not out["input"].exists():
+            _synth_chime(out["input"], INPUT_NOTES)
+    except Exception:
+        pass
+    return out
 
 
 def fmt_tokens(n: int) -> str:
@@ -623,6 +687,14 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li>Drop To A Cheaper Model With <b>/model</b> For Routine Edits; Promote Back To Opus For Hard Reasoning.</li>
 </ul>
 
+<h3 style="color:#1F2430">Sound Cues</h3>
+<p style="color:#60667A">Two Soft Melodic Chimes Play When A Session Transitions Into A State That Needs You:</p>
+<ul style="color:#1F2430; line-height:1.6">
+  <li><b>Approve</b> — A Two-Note Descending Ding-Dong (E5 → C5). Plays Once When A Tool Permission Becomes Pending. Meant To Catch Your Ear Without Alarming.</li>
+  <li><b>Input</b> — A Three-Note Rising Arpeggio (A4 → C♯5 → E5). Plays Once When Claude Asks You A Follow-Up Question. Softer And More "Question-Shaped" Than Approve.</li>
+</ul>
+<p style="color:#60667A">Sounds Are Auto-Generated On First Run (Bell/Chime Synthesis, Saved To <b>assets/sounds/</b>) And Played Via Qt's Non-Blocking Audio. Toggle Via Right-Click → <b>Sound Cues</b>. Setting Persists. Throttled Per Session So You Won't Get Spammed If A State Flips Rapidly.</p>
+
 <h3 style="color:#1F2430">Move, Resize, Relaunch</h3>
 <ul style="color:#1F2430; line-height:1.6">
   <li><b>Drag The Panel Body</b> → Move The Widget.</li>
@@ -908,6 +980,28 @@ class BeeperWidget(QMainWindow):
         self._opacity_actions: dict[int, QAction] = {}
         self._current_strategy: str | None = None
         self._current_mode: str | None = None
+
+        # Sound effects for approve / input pings. Generated on first run,
+        # played via QSoundEffect so overlap-safe and non-blocking.
+        self._sound_enabled = bool(w_cfg.get("sound_enabled", True))
+        self._sound_last_state: dict[str, str] = {}     # session_id -> last cue fired
+        self._sound_last_time: dict[str, float] = {}    # session_id -> ts
+        self._sound_effects: dict[str, Any] = {}
+        try:
+            from PySide6.QtMultimedia import QSoundEffect
+            from PySide6.QtCore import QUrl
+            paths = ensure_sounds()
+            for name, p in paths.items():
+                if not p.exists():
+                    continue
+                se = QSoundEffect(self)
+                se.setSource(QUrl.fromLocalFile(str(p)))
+                se.setVolume(0.55)
+                self._sound_effects[name] = se
+        except Exception as e:
+            # QtMultimedia may be unavailable — widget still works, just silent
+            self._sound_effects = {}
+
         self._tray = self._build_tray()
 
         # Apply saved opacity (default 95%)
@@ -1009,12 +1103,46 @@ class BeeperWidget(QMainWindow):
         self._sync_menu_selections(data.get("strategy"), data.get("mode"))
         self._sessions = data.get("sessions", []) or []
         self._refresh_tabbar(self._sessions)
+        self._fire_sound_cues()
 
         s = self._active_session()
         if not s:
             self._render_empty(data.get("strategy"), data.get("mode"))
             return
         self._render_session(s)
+
+    def _fire_sound_cues(self) -> None:
+        """For each session, play a ping when the attention state enters
+        approval or input (not on every poll — only on transition)."""
+        if not self._sound_enabled or not self._sound_effects:
+            return
+        now = time.time()
+        live_ids: set[str] = set()
+        for s in self._sessions:
+            sid = s["session_id"]
+            live_ids.add(sid)
+            key = self._state_key(s)
+            prev = self._sound_last_state.get(sid)
+            cue: str | None = None
+            if key == "approval" and prev != "approval":
+                cue = "approve"
+            elif key == "input" and prev != "input":
+                cue = "input"
+            if cue:
+                last_t = self._sound_last_time.get(sid + ":" + cue, 0)
+                if now - last_t >= SOUND_COOLDOWN_S:
+                    se = self._sound_effects.get(cue)
+                    try:
+                        if se is not None:
+                            se.play()
+                        self._sound_last_time[sid + ":" + cue] = now
+                    except Exception:
+                        pass
+            self._sound_last_state[sid] = key
+        # Drop state for sessions that no longer exist
+        for gone in list(self._sound_last_state.keys()):
+            if gone not in live_ids:
+                self._sound_last_state.pop(gone, None)
 
     # State mapping used by both the tabs and the action circle.
     def _state_key(self, s: dict[str, Any]) -> str:
@@ -1613,6 +1741,13 @@ class BeeperWidget(QMainWindow):
         custom = QAction("Custom…", self); custom.triggered.connect(self._set_opacity_custom)
         opacity_menu.addAction(custom)
 
+        # Sound toggle
+        self._sound_action = QAction("Sound Cues", self)
+        self._sound_action.setCheckable(True)
+        self._sound_action.setChecked(self._sound_enabled)
+        self._sound_action.triggered.connect(self._toggle_sound)
+        menu.addAction(self._sound_action)
+
         menu.addSeparator()
         h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
         s = QAction("Manage Trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
@@ -1644,6 +1779,19 @@ class BeeperWidget(QMainWindow):
                 CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
             except Exception:
                 pass
+
+    def _toggle_sound(self, checked: bool) -> None:
+        self._sound_enabled = bool(checked)
+        try:
+            cfg = load_cfg()
+            cfg.setdefault("widget", {})["sound_enabled"] = self._sound_enabled
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+        # Small confirmation ping when turning it on
+        if self._sound_enabled and "input" in self._sound_effects:
+            try: self._sound_effects["input"].play()
+            except Exception: pass
 
     def _set_opacity_custom(self) -> None:
         current = int(self.windowOpacity() * 100)
