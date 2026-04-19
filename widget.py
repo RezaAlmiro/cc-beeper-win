@@ -22,8 +22,8 @@ from PySide6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve,
 from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPainter, QPixmap, QRadialGradient, QColor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu,
-    QPushButton, QScrollArea, QSizePolicy, QSystemTrayIcon, QVBoxLayout,
-    QWidget, QGraphicsOpacityEffect, QProgressBar,
+    QPushButton, QScrollArea, QSizeGrip, QSizePolicy, QSystemTrayIcon,
+    QVBoxLayout, QWidget, QGraphicsOpacityEffect, QProgressBar,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -611,6 +611,16 @@ class BeeperWidget(QMainWindow):
         meter_lay.addWidget(self.tok_lbl)
         root.addWidget(self.meter)
 
+        # Resize grip in the bottom-right corner (visible hint that the
+        # widget can be resized even though the window is frameless).
+        grip_row = QHBoxLayout(); grip_row.setContentsMargins(0, 0, 0, 0); grip_row.setSpacing(0)
+        grip_row.addStretch(1)
+        self._size_grip = QSizeGrip(container)
+        self._size_grip.setFixedSize(14, 14)
+        self._size_grip.setStyleSheet("background: rgba(72, 124, 255, 140); border-top-left-radius: 3px;")
+        grip_row.addWidget(self._size_grip, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        root.addLayout(grip_row)
+
         # --- halo, state, tabs ---
         halo_color = w_cfg.get("halo_color", "#ff5e5e")
         self.halo = HaloWindow(halo_color)
@@ -623,10 +633,16 @@ class BeeperWidget(QMainWindow):
         self._dragging = False
         self._drag_offset = QPoint(); self._drag_moved = False
 
+        self.setMinimumSize(200, 170)
         self.resize(self.w_px, self.h_px)
         self._dock_corner = w_cfg.get("corner", "bottom-right")
         self._dock_margin = int(w_cfg.get("margin", 16))
         self._dock_to_corner()
+        # Debounce config writes so we're not hammering disk while dragging.
+        self._size_save_timer = QTimer(self)
+        self._size_save_timer.setSingleShot(True)
+        self._size_save_timer.setInterval(400)
+        self._size_save_timer.timeout.connect(self._persist_size)
 
         self._popup = ApprovalPopup(self._resolve)
         self._settings = TrustSettings()
@@ -655,6 +671,21 @@ class BeeperWidget(QMainWindow):
         super().resizeEvent(event)
         self.border_overlay.setGeometry(self.centralWidget().rect())
         self.halo.anchor_to(self.frameGeometry(), self._halo_extra)
+        # User-driven resize → persist new size to config after a short
+        # debounce so we're not saving mid-drag.
+        if hasattr(self, "_size_save_timer"):
+            self._size_save_timer.start()
+
+    def _persist_size(self) -> None:
+        try:
+            cfg = load_cfg()
+            w_cfg = cfg.setdefault("widget", {})
+            w_cfg["width"] = int(self.width())
+            w_cfg["height"] = int(self.height())
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            self.w_px = self.width(); self.h_px = self.height()
+        except Exception:
+            pass
 
     def moveEvent(self, event) -> None:
         super().moveEvent(event)
