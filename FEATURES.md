@@ -187,8 +187,10 @@ before building.
   state badge + ticker). Tab strip, context meter, token line and
   bottom button row hide. Expanded height is remembered and restored
   on toggle-off. Persists in `config.json` under `widget.compact`.
-- **Custom sprite pack** — drop your own 8-bit frames into
-  `assets/custom/` and the widget uses those instead
+- ~~**Custom sprite pack**~~ — **shipped.** `_load_pixmap` checks
+  `assets/custom/<fname>` first, falls back to the bundled asset.
+  Folder is gitignored so user packs stay local. Filenames are
+  documented in README.
 - ~~**State-transition animations**~~ — **sprite crossfade shipped.**
   150 ms opacity crossfade (75 ms fade-out → swap → 75 ms fade-in,
   `InOutQuad` easing) when the sprite changes. No-op on same-state

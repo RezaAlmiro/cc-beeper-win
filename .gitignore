@@ -11,6 +11,9 @@ assets/icon.ico
 # Per-user trust state (regenerated on first run)
 trust.json
 
+# User-supplied sprite overrides
+assets/custom/
+
 # Claude Code settings.json backups created by the installer
 *.ccbeeper.bak
 

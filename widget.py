@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
+CUSTOM_ASSETS = ASSETS / "custom"   # user-supplied override sprites
 SOUNDS_DIR = ASSETS / "sounds"
 CONFIG_PATH = ROOT / "config.json"
 PORT_FILE = ROOT / ".port"
@@ -1782,9 +1783,13 @@ class BeeperWidget(QMainWindow):
     # -- state rendering --------------------------------------------------
 
     def _load_pixmap(self, fname: str) -> QPixmap:
+        """Load a sprite by name. Checks assets/custom/<fname> first so
+        users can drop their own PNGs in to override the bundled ones
+        without editing code. Falls back to the bundled asset otherwise."""
         if fname not in self._pixmap_cache:
-            p = ASSETS / fname
-            self._pixmap_cache[fname] = QPixmap(str(p)) if p.exists() else QPixmap()
+            custom = CUSTOM_ASSETS / fname
+            path = custom if custom.exists() else (ASSETS / fname)
+            self._pixmap_cache[fname] = QPixmap(str(path)) if path.exists() else QPixmap()
         return self._pixmap_cache[fname]
 
     def _dpr(self) -> float:

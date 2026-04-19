@@ -248,6 +248,25 @@ Your approved "allow forever" categories live in `trust.json` (repo
 ships empty). Session-scoped approvals stay in RAM only. Delete
 `trust.json` to wipe persistent trust.
 
+### Custom sprite pack
+
+Drop your own 64 × 64 PNGs into `assets/custom/` using the same
+filenames as the bundled ones — the widget picks them up on next
+launch, falling back to the bundled sprite for anything you
+haven't overridden. Filenames to match:
+
+```
+assets/custom/snoozing.png   # idle
+assets/custom/working.png    # mid-turn
+assets/custom/done.png       # turn complete
+assets/custom/input.png      # follow-up question
+assets/custom/allow.png      # approval pending
+assets/custom/error.png      # last turn failed
+assets/custom/listening.png  # voice / listening state
+```
+
+The folder is gitignored — your custom pack stays local.
+
 ## Architecture
 
 ```
