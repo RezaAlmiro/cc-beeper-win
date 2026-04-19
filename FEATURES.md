@@ -191,8 +191,12 @@ before building.
   `assets/custom/` and the widget uses those instead
 - **State-transition animations** — fade between sprites instead of
   instant swap; cross-fade halo colour changes
-- **Multi-monitor awareness** — remember which screen the widget was on
-  when quit; restore there on launch
+- ~~**Multi-monitor awareness**~~ — **shipped.** Position (x / y /
+  screen name) is saved on every drag, restored on launch. Falls back
+  to "screen containing the stored point" if the remembered monitor
+  was unplugged, and to `_dock_to_corner` if no screen contains it.
+  Position is clamped within the target screen so a resolution change
+  never spawns off-screen.
 - **DPI-aware scaling** — currently scales by OS default; could
   fine-tune for 200 %+ monitors
 

@@ -1607,7 +1607,12 @@ class BeeperWidget(QMainWindow):
         self.resize(self.w_px, self.h_px)
         self._dock_corner = w_cfg.get("corner", "bottom-right")
         self._dock_margin = int(w_cfg.get("margin", 16))
-        self._dock_to_corner()
+        # Suppress position persistence during startup (programmatic moves
+        # shouldn't overwrite what the user set last session).
+        self._suppress_pos_save = True
+        if not self._restore_position(w_cfg):
+            self._dock_to_corner()
+        self._suppress_pos_save = False
 
         self._popup = ApprovalPopup(self._resolve)
         self._settings = TrustSettings()
@@ -1653,6 +1658,10 @@ class BeeperWidget(QMainWindow):
         self._size_save_timer.setSingleShot(True); self._size_save_timer.setInterval(400)
         self._size_save_timer.timeout.connect(self._persist_size)
 
+        self._pos_save_timer = QTimer(self)
+        self._pos_save_timer.setSingleShot(True); self._pos_save_timer.setInterval(400)
+        self._pos_save_timer.timeout.connect(self._persist_position)
+
         self.setMouseTracking(True)
         container.setMouseTracking(True)
         QApplication.instance().installEventFilter(self)
@@ -1693,6 +1702,74 @@ class BeeperWidget(QMainWindow):
             self.w_px = self.width(); self.h_px = self.height()
         except Exception:
             pass
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if getattr(self, "_suppress_pos_save", True):
+            return
+        if hasattr(self, "_pos_save_timer"):
+            self._pos_save_timer.start()
+
+    def _current_screen_name(self) -> str:
+        """QScreen.name() — on Windows this is "\\\\.\\DISPLAY1" etc.
+        Returns '' if the widget isn't yet on any screen."""
+        try:
+            wh = self.windowHandle()
+            scr = wh.screen() if wh is not None else None
+            if scr is None:
+                scr = QGuiApplication.screenAt(self.frameGeometry().center())
+            return scr.name() if scr is not None else ""
+        except Exception:
+            return ""
+
+    def _persist_position(self):
+        """Save x/y + screen name so the widget reappears on the same
+        monitor across restarts. Skipped during programmatic moves."""
+        if getattr(self, "_suppress_pos_save", True):
+            return
+        try:
+            cfg = load_cfg()
+            w_cfg = cfg.setdefault("widget", {})
+            w_cfg["x"] = int(self.x())
+            w_cfg["y"] = int(self.y())
+            name = self._current_screen_name()
+            if name:
+                w_cfg["screen"] = name
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _restore_position(self, w_cfg: dict[str, Any]) -> bool:
+        """Try to reattach to the remembered screen + x/y. Returns False
+        if the remembered screen is gone or the stored point falls
+        outside any currently attached screen (in which case the caller
+        should fall back to _dock_to_corner)."""
+        if "x" not in w_cfg or "y" not in w_cfg:
+            return False
+        try:
+            x = int(w_cfg["x"]); y = int(w_cfg["y"])
+        except (TypeError, ValueError):
+            return False
+        remembered = str(w_cfg.get("screen") or "")
+        # Prefer the remembered screen if still connected.
+        target_screen = None
+        for s in QGuiApplication.screens():
+            if remembered and s.name() == remembered:
+                target_screen = s; break
+        # Fall back: any screen whose geometry contains the stored point.
+        if target_screen is None:
+            for s in QGuiApplication.screens():
+                if s.geometry().contains(x, y):
+                    target_screen = s; break
+        if target_screen is None:
+            return False
+        geom = target_screen.availableGeometry()
+        # Clamp within the target screen so we don't spawn off-screen if
+        # the monitor's resolution shrank between runs.
+        x = max(geom.left(), min(x, geom.right() - max(100, self.width()  // 2)))
+        y = max(geom.top(),  min(y, geom.bottom() - max(80,  self.height() // 2)))
+        self.move(x, y)
+        return True
 
     # -- state rendering --------------------------------------------------
 
