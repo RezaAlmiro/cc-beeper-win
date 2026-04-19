@@ -33,16 +33,17 @@ PORT_FILE = ROOT / ".port"
 POLL_MS = 500
 
 STATE_TO_SPRITE = {
-    "snoozing":  "snoozing.png",
-    "working":   "working.png",
-    "done":      "done.png",
-    "error":     "error.png",
-    "allow":     "allow.png",
-    "input":     "input.png",
-    "listening": "listening.png",
-    "recap":     "listening.png",
+    "snoozing":        "snoozing.png",
+    "working":         "working.png",
+    "done":            "done.png",
+    "awaiting_input":  "input.png",
+    "error":           "error.png",
+    "allow":           "allow.png",
+    "input":           "input.png",
+    "listening":       "listening.png",
+    "recap":           "listening.png",
 }
-ATTENTION_STATES = {"allow", "input", "error"}
+ATTENTION_STATES = {"allow", "input", "error", "awaiting_input"}
 STATE_COLOR = {
     "snoozing": "#4b5563",
     "working":  "#7BAFFF",
@@ -399,6 +400,7 @@ class SessionTab(QPushButton):
         self.setProperty("active", False)
         self.setProperty("flashing", False)
         self.setProperty("tabstate", "working")
+        self.setProperty("flash_color", "red")
         self.setMinimumHeight(18)
         self.setMaximumHeight(22)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -415,12 +417,18 @@ class SessionTab(QPushButton):
         self._repolish()
 
     def set_tabstate(self, state: str) -> None:
-        # "done" → green tint; anything else → red tint (the default).
-        self.setProperty("tabstate", "done" if state == "done" else "working")
+        if state == "done":
+            tabstate = "done"
+        elif state == "awaiting_input":
+            tabstate = "awaiting"
+        else:
+            tabstate = "working"
+        self.setProperty("tabstate", tabstate)
         self._repolish()
 
-    def set_flashing(self, flash: bool) -> None:
+    def set_flashing(self, flash: bool, color: str = "red") -> None:
         self.setProperty("flashing", bool(flash))
+        self.setProperty("flash_color", color)
         self._repolish()
         if flash:
             if self._flash_anim is None:
@@ -609,9 +617,15 @@ class BeeperWidget(QMainWindow):
             tab.setToolTip(self._tab_tooltip(s))
             tab.set_tabstate(state)
             has_pending = bool(s.get("pending"))
-            # Attention-flash overrides the green/red tint. "done" on its own
-            # is NOT an attention state — we just color the tab green.
-            tab.set_flashing(has_pending or state in ATTENTION_STATES)
+            # Flash colour depends on what kind of attention: permission
+            # prompts / tool approvals → red; Claude asking a follow-up
+            # question → green. "done" alone is NOT flashing.
+            if has_pending or state in {"allow", "input", "error"}:
+                tab.set_flashing(True, color="red")
+            elif state == "awaiting_input":
+                tab.set_flashing(True, color="green")
+            else:
+                tab.set_flashing(False)
 
     def _tab_tooltip(self, s: dict[str, Any]) -> str:
         lines = [

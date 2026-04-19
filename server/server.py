@@ -108,6 +108,7 @@ def _session(session_id: str) -> dict[str, Any]:
         "message": None,
         "expires_at": 0.0,
         "ts": _now(),
+        "awaiting_input": False,   # True = Claude asked a question and is waiting on user
     })
 
 
@@ -479,6 +480,8 @@ async def user_prompt_submit(request: Request) -> JSONResponse:
         if not s.get("first_task"):
             from stats import _clean_prompt  # local import to avoid cycle
             s["first_task"] = _clean_prompt(prompt)
+    # New prompt arriving clears any "awaiting user reply" flag.
+    s["awaiting_input"] = False
     _set_state(session_id, "working", message=prompt[:120])
     log.info("UserPromptSubmit session=%s prompt_len=%d", session_id[:8], len(prompt))
     return JSONResponse({})
@@ -548,6 +551,12 @@ async def pretooluse(request: Request) -> JSONResponse:
     strategy = CFG.get("decision_strategy", "assist")
     sec_cfg = CFG.get("security", {})
     mode = CFG.get("mode", "relaxed")
+
+    # If Claude is about to call AskUserQuestion, it's queueing a
+    # follow-up for the user — flag this so when Stop fires we know to
+    # render the "done, but awaiting your reply" state instead of plain done.
+    if tool_name == "AskUserQuestion":
+        SESSIONS.setdefault(session_id, {})["awaiting_input"] = True
 
     _set_state(
         session_id,
@@ -654,6 +663,11 @@ async def posttooluse(request: Request) -> JSONResponse:
     tool_name = body.get("tool_name") or "?"
     tool_input = body.get("tool_input") or {}
     category = classify(tool_name, tool_input)
+    # AskUserQuestion completed means the user has already answered → no
+    # longer awaiting input.
+    if tool_name == "AskUserQuestion":
+        s = SESSIONS.setdefault(session_id, {})
+        s["awaiting_input"] = False
     if CFG.get("security", {}).get("auto_learn_from_posttooluse"):
         if not TRUST.is_trusted(category):
             TRUST.add_session(category)
@@ -670,21 +684,24 @@ async def notification(request: Request) -> JSONResponse:
     log.info("Notification session=%s type=%s: %s", session_id[:8], ntype or "?", msg[:80])
 
     # Claude Code fires Notification in several cases:
-    #   permission_prompt  — real "approve this tool" prompt → flash
-    #   elicitation_dialog — mid-turn question to user → flash
-    #   idle_prompt        — CC is idle waiting for next user prompt → NOT flashing
-    #   auth_success       — benign auth event → NOT flashing
-    # Avoid treating idle_prompt as attention; that's what was making the
-    # widget flash after a session visibly finished.
+    #   permission_prompt  — real "approve this tool" prompt → red flash
+    #   elicitation_dialog — Claude is asking the user a question → green flash
+    #   idle_prompt        — CC is idle waiting for next user prompt → quiet
+    #   auth_success       — benign auth event → quiet
     IDLE_TYPES = {"idle_prompt", "auth_success"}
     if ntype in IDLE_TYPES:
-        # Session is idle waiting for user input. Stay snoozing rather than
-        # grabbing attention.
         cur = (SESSIONS.get(session_id) or {}).get("state")
-        if cur != "done":
+        if cur != "done" and cur != "awaiting_input":
             _set_state(session_id, "snoozing", message=msg[:120])
         return JSONResponse({})
 
+    if ntype == "elicitation_dialog":
+        s = SESSIONS.setdefault(session_id, {})
+        s["awaiting_input"] = True
+        _set_state(session_id, "awaiting_input", message=msg[:120])
+        return JSONResponse({})
+
+    # permission_prompt or any other non-idle type — treat as red-flash input.
     _set_state(session_id, "input", message=msg[:120], ttl_s=45.0)
     return JSONResponse({})
 
@@ -695,10 +712,19 @@ async def stop(request: Request) -> JSONResponse:
     session_id = str(body.get("session_id") or "unknown")
     s = _apply_hook_metadata(session_id, body, request)
     s["stopped_at"] = _now()
-    log.info("Stop session=%s", session_id[:8])
-    # Stay DONE until the next UserPromptSubmit. The tab turns green so the
-    # user can tell at a glance which sessions are waiting on them.
-    _set_state(session_id, "done", message="Turn finished — ready for next prompt")
+    log.info("Stop session=%s awaiting=%s", session_id[:8], bool(s.get("awaiting_input")))
+    # Two kinds of "turn finished":
+    #   - awaiting_input: Claude used AskUserQuestion or fired elicitation_dialog
+    #     in this turn → flashing green (turn done, but Claude needs your answer
+    #     to continue)
+    #   - plain done: Claude finished and is waiting for your next free-form
+    #     prompt → steady green
+    if s.get("awaiting_input"):
+        _set_state(session_id, "awaiting_input",
+                   message="Turn finished — Claude is waiting on your reply")
+    else:
+        _set_state(session_id, "done",
+                   message="Turn finished — ready for next prompt")
     return JSONResponse({})
 
 
