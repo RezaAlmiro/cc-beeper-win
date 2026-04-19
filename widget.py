@@ -196,6 +196,24 @@ QPushButton#iconBtn[accent="red"]   { background: #FF5E5E; color: white; border:
 QPushButton#iconBtn[accent="green"] { background: #4CD98D; color: #062615; border: 1px solid #2fa35a; }
 QPushButton#iconBtn[accent="amber"] { background: #FFB74D; color: #2a1d00; border: 1px solid #c78a2a; }
 
+/* The big circular state button in the centre of the bottom row. */
+QPushButton#actionCircle {
+    min-width: 46px; max-width: 46px; min-height: 46px; max-height: 46px;
+    border-radius: 23px;
+    border: 2px solid rgba(255, 255, 255, 220);
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 16px; font-weight: 800;
+    color: #0B1020;
+    background: #9AA3B2;
+}
+QPushButton#actionCircle:hover { border: 2px solid #1F2430; }
+QPushButton#actionCircle[accent="done"]    { background: #4CD98D; color: #062615; }
+QPushButton#actionCircle[accent="idle"]    { background: #FFD24D; color: #2a2400; }
+QPushButton#actionCircle[accent="working"] { background: #FF5E5E; color: #ffffff; }
+QPushButton#actionCircle[accent="input"]   { background: #3DA1FF; color: #001830; }
+QPushButton#actionCircle[accent="approve"] { background: #FFB74D; color: #2a1d00; }
+QPushButton#actionCircle[accent="error"]   { background: #FF5E5E; color: #ffffff; }
+
 QPushButton#smallBtn {
     background: transparent; color: #1F2430;
     border: none; font-family: 'Segoe UI', sans-serif;
@@ -334,19 +352,21 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>State Dot (top-right)</b> — The Live Status Colour (See Below).</li>
   <li><b>Context Bar</b> — Shows How Much Of The Model's Context Window Is In Use. The Left Label Is Percent Used; The Right Label Is Tokens Remaining. Bar Turns Orange Above 60% And Red Above 85%.</li>
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
-  <li><b>Action Button (Centre Bottom)</b> — Label Changes With State: "Approve?", "Reply", "Working…", "Done", "Focus". Click Does The Natural Thing For The Current State.</li>
+  <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
   <li><b>◀ / ▶ Arrows</b> — Cycle Through All Active Sessions.</li>
   <li><b>⇣ Commands ▾</b> — Dropdown With /compact, /clear, /cost, /model, /resume. Focuses The Session's Terminal And Types The Command.</li>
   <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
 </ul>
 
-<h3 style="color:#1F2430">State Dot Colours</h3>
+<h3 style="color:#1F2430">State — Dot + Action Circle</h3>
+<p style="color:#60667A">The Top-Right Dot And The Big Centre-Bottom Circle Always Agree. The Circle Adds A Single-Letter Code So You Know The State At A Glance:</p>
 <ul style="color:#1F2430; line-height:1.6">
-  <li><b style="color:#ff7a7a">Red</b> — Claude Is Working. Tools Are Firing; Wait.</li>
-  <li><b style="color:#FFB74D">Amber</b> — A Tool Needs Your Approval. Click "Approve?" Or The Sprite To Open The 4-Way Ladder.</li>
-  <li><b style="color:#4CD98D">Green (Steady)</b> — Turn Finished. Nothing Else Expected — Ready For Your Next Prompt.</li>
-  <li><b style="color:#7CE0A8">Green (Soft)</b> — Turn Finished But Claude Asked A Follow-Up Question. Reply To Continue.</li>
-  <li><b style="color:#9AA3B2">Grey</b> — Idle / No Active Sessions.</li>
+  <li><b style="color:#4CD98D">D  —  Green</b>  ·  <b>Done</b>. Turn Finished, Nothing Else Expected — Ready For Your Next Prompt.</li>
+  <li><b style="color:#FFD24D">I  —  Yellow</b>  ·  <b>Idle</b>. Session Is Registered But Hasn't Started A Turn Yet.</li>
+  <li><b style="color:#FF5E5E">W  —  Flashing Red</b>  ·  <b>Working</b>. Claude Is Mid-Turn, Tools Are Firing.</li>
+  <li><b style="color:#3DA1FF">IN  —  Flashing Blue</b>  ·  <b>Input Needed</b>. Claude Asked A Follow-Up; Waiting On Your Reply.</li>
+  <li><b style="color:#FFB74D">A  —  Flashing Amber</b>  ·  <b>Approval Pending</b>. A Tool Call Needs Your Yes/No. Click The Circle To Open The 4-Way Ladder.</li>
+  <li><b style="color:#FF5E5E">E  —  Solid Red</b>  ·  <b>Error</b>. The Last Turn Failed.</li>
 </ul>
 
 <h3 style="color:#1F2430">The Approval Ladder</h3>
@@ -610,8 +630,13 @@ class BeeperWidget(QMainWindow):
         btns = QHBoxLayout(); btns.setSpacing(6)
         self.btn_rename = QPushButton("✎ Rename"); self.btn_rename.setObjectName("smallBtn")
         self.btn_prev   = QPushButton("◀");         self.btn_prev.setObjectName("iconBtn")
-        self.btn_action = QPushButton("●");         self.btn_action.setObjectName("iconBtn")
+        self.btn_action = QPushButton("I");         self.btn_action.setObjectName("actionCircle")
+        self.btn_action.setToolTip("Session state")
         self.btn_next   = QPushButton("▶");         self.btn_next.setObjectName("iconBtn")
+        self._action_fx = QGraphicsOpacityEffect(self.btn_action)
+        self._action_fx.setOpacity(1.0)
+        self.btn_action.setGraphicsEffect(self._action_fx)
+        self._action_flash: QPropertyAnimation | None = None
         # Slash-command dropdown (replaces the single /compact button)
         self.btn_slash  = QPushButton("⇣ Commands ▾"); self.btn_slash.setObjectName("smallBtn")
         slash_menu = QMenu(self)
@@ -752,10 +777,33 @@ class BeeperWidget(QMainWindow):
         self._set_state_dot("snoozing")
         self.ctx_bar.setValue(0); self.lbl_ctx_used.setText(""); self.lbl_ctx_left.setText("")
         self.lbl_meta.setText("Open A Claude Code Session And Its Tab Will Appear Here")
-        self.btn_action.setText("●"); self.btn_action.setProperty("accent", ""); self.btn_action.style().unpolish(self.btn_action); self.btn_action.style().polish(self.btn_action)
+        self._set_action_button(letter="I", accent="idle", tooltip="Idle — No Active Sessions", flash=False)
         pm = self._load_pixmap("snoozing.png")
         if not pm.isNull():
             self.sprite.setPixmap(pm.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+
+    # --- action circle rendering -----------------------------------------
+
+    def _set_action_button(self, *, letter: str, accent: str, tooltip: str, flash: bool) -> None:
+        self.btn_action.setText(letter)
+        self.btn_action.setProperty("accent", accent)
+        self.btn_action.style().unpolish(self.btn_action)
+        self.btn_action.style().polish(self.btn_action)
+        self.btn_action.setToolTip(tooltip)
+        self._set_action_flash(flash)
+
+    def _set_action_flash(self, on: bool) -> None:
+        if on:
+            if self._action_flash is None:
+                a = QPropertyAnimation(self._action_fx, b"opacity", self)
+                a.setDuration(750)
+                a.setStartValue(1.0); a.setKeyValueAt(0.5, 0.35); a.setEndValue(1.0)
+                a.setLoopCount(-1); a.setEasingCurve(QEasingCurve.Type.InOutSine); a.start()
+                self._action_flash = a
+        else:
+            if self._action_flash is not None:
+                self._action_flash.stop(); self._action_flash = None
+            self._action_fx.setOpacity(1.0)
 
     def _render_session(self, s):
         state = s.get("state", "snoozing")
@@ -773,18 +821,31 @@ class BeeperWidget(QMainWindow):
         pending = s.get("pending") or []
         has_pending = bool(pending)
 
-        # Action button label + colour depending on what's going on
+        # Action circle — letter + colour + optional flashing
         if has_pending:
-            self.btn_action.setText("Approve?"); self.btn_action.setProperty("accent", "amber")
+            self._set_action_button(letter="A", accent="approve",
+                                    tooltip="Approve? — tool wants permission (flashing amber)",
+                                    flash=True)
         elif state == "awaiting_input":
-            self.btn_action.setText("Reply"); self.btn_action.setProperty("accent", "green")
+            self._set_action_button(letter="IN", accent="input",
+                                    tooltip="Input — Claude is waiting on your reply (flashing blue)",
+                                    flash=True)
         elif state == "working":
-            self.btn_action.setText("Working…"); self.btn_action.setProperty("accent", "red")
+            self._set_action_button(letter="W", accent="working",
+                                    tooltip="Working — Claude is mid-turn (flashing red)",
+                                    flash=True)
         elif state == "done":
-            self.btn_action.setText("Done"); self.btn_action.setProperty("accent", "green")
+            self._set_action_button(letter="D", accent="done",
+                                    tooltip="Done — turn finished, ready for next prompt (green)",
+                                    flash=False)
+        elif state == "error":
+            self._set_action_button(letter="E", accent="error",
+                                    tooltip="Error — last turn failed (red)",
+                                    flash=False)
         else:
-            self.btn_action.setText("Focus"); self.btn_action.setProperty("accent", "")
-        self.btn_action.style().unpolish(self.btn_action); self.btn_action.style().polish(self.btn_action)
+            self._set_action_button(letter="I", accent="idle",
+                                    tooltip="Idle — ready (yellow)",
+                                    flash=False)
 
         # Context bar + labels
         stats = s.get("stats") or {}
