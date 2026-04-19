@@ -305,9 +305,55 @@ async def health() -> dict[str, Any]:
     }
 
 
+def _is_session_alive(s: dict[str, Any]) -> bool:
+    """Best-effort check: is the Claude Code process that owns this session
+    still running? Returns True if we can't tell (don't prune on uncertainty)."""
+    pid = s.get("cc_ppid")
+    if not pid:
+        return True  # we never captured a PID — keep, can't disprove
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return True
+    try:
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        return True
+
+
+# Sessions whose Claude process exited this long ago (seconds) are swept.
+# Short because once the tab is closed, there's no point keeping it visible.
+DEAD_SESSION_TTL_S = 8
+
+
+def _sweep_dead_sessions() -> list[str]:
+    """Remove sessions whose host Claude process has exited. Returns the
+    list of session IDs that were removed."""
+    now = _now()
+    removed: list[str] = []
+    for sid, s in list(SESSIONS.items()):
+        if _is_session_alive(s):
+            # reset dead-first-seen marker if process came back (shouldn't,
+            # but be safe)
+            s.pop("_dead_first_seen_at", None)
+            continue
+        first = s.get("_dead_first_seen_at")
+        if first is None:
+            s["_dead_first_seen_at"] = now
+            continue
+        if (now - first) >= DEAD_SESSION_TTL_S:
+            removed.append(sid)
+            SESSIONS.pop(sid, None)
+            STATS_CACHE.pop(sid, None)
+    return removed
+
+
 @app.get("/sessions")
 async def sessions_endpoint() -> dict[str, Any]:
     now = _now()
+    swept = _sweep_dead_sessions()
+    if swept:
+        log.info("swept dead sessions: %s", [s[:8] for s in swept])
     out: list[dict[str, Any]] = []
     for sid, s in SESSIONS.items():
         # auto-revert transient states
@@ -725,6 +771,18 @@ async def stop(request: Request) -> JSONResponse:
     else:
         _set_state(session_id, "done",
                    message="Turn finished — ready for next prompt")
+    return JSONResponse({})
+
+
+@app.post("/sessionend")
+async def session_end(request: Request) -> JSONResponse:
+    """Claude Code fires SessionEnd on a clean /exit or equivalent.
+    Remove the session immediately so the widget drops its tab."""
+    body = await safe_json(request)
+    session_id = str(body.get("session_id") or "unknown")
+    SESSIONS.pop(session_id, None)
+    STATS_CACHE.pop(session_id, None)
+    log.info("SessionEnd session=%s (removed)", session_id[:8])
     return JSONResponse({})
 
 

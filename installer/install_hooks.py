@@ -28,6 +28,7 @@ EVENTS = [
     ("Stop", "stop"),
     ("StopFailure", "stopfailure"),
     ("Notification", "notification"),
+    ("SessionEnd", "sessionend"),
 ]
 
 
