@@ -300,6 +300,11 @@ claude  ──hook fires──>  bash curl  ──POST──>  FastAPI server  �
   entries are tagged with `cc-beeper-win` for clean reversal. Your other
   hooks are never touched.
 
+## Full feature list + roadmap
+
+See [FEATURES.md](FEATURES.md) for a complete inventory of what's
+shipped and a ranked backlog of potential improvements.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
