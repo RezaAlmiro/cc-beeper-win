@@ -796,20 +796,18 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li>Drop To A Cheaper Model With <b>/model</b> For Routine Edits; Promote Back To Opus For Hard Reasoning.</li>
 </ul>
 
-<h3 style="color:#1F2430">Session &amp; Limits</h3>
-<p style="color:#60667A">Right-Click → <b>Session &amp; Limits…</b> Opens A Dark-Mode Panel Styled Like Anthropic's Desktop-App Usage Page. Shows:</p>
+<h3 style="color:#1F2430">Session Insights</h3>
+<p style="color:#60667A">Right-Click → <b>Session Insights…</b> Opens A Dark-Mode Analytics Panel Built From Your Local Transcripts. No Made-Up Progress Bars — Just The Numbers That Actually Describe Your Claude Usage:</p>
 <ul style="color:#1F2430; line-height:1.6">
-  <li><b>Current Session</b> — Rolling 5-Hour Window With A Progress Bar And A "Resets In" Timer Pegged To The Oldest Message In The Window.</li>
-  <li><b>Weekly Limits</b> — All Models, Sonnet Only, Opus Only (And Haiku If Any), Each With A Bar And "Resets On Monday 00:00" Timer.</li>
-  <li><b>Raw Totals</b> — Exact Token Counts For Today / Week / All-Time.</li>
-  <li><b>Open Anthropic Usage Page</b> — One-Click Launch Of <b>claude.ai/settings/usage</b> For The Authoritative Numbers. Anthropic Doesn't Expose Those Live Percentages Without An Authenticated Session, So This Button Is The Reliable Path For Exact Figures.</li>
-</ul>
-<p style="color:#60667A">Progress Bars Use Rough Per-Plan Defaults (Max-Ish Caps). To Match Your Exact Plan, Set Them In <b>config.json</b> Under <b>widget.usage_limits</b>:</p>
-<ul style="color:#1F2430; line-height:1.6; font-family:Consolas, monospace; font-size:11px">
-  <li>session_5h — Tokens Per 5-Hour Rolling Window</li>
-  <li>weekly_all — Tokens Per Week, All Models Combined</li>
-  <li>weekly_sonnet — Sonnet-Only Weekly Quota</li>
-  <li>weekly_opus — Opus-Only Weekly Quota</li>
+  <li><b>Summary</b> — Current Session (Rolling 5 H), Today, This Week, All-Time; Tokens + Turns + Reset Timing.</li>
+  <li><b>When You Work</b> — Auto-Computed <b>Peak Hour</b>, <b>Off-Peak Hours</b> (Lowest Usage Slots Good For Long Background Tasks), And <b>Busiest Day Of Week</b>, Each With A Share Percentage.</li>
+  <li><b>Tokens By Hour Of Day</b> — 24-Bar Chart Spanning 00 To 23, Peak Hour Highlighted Orange.</li>
+  <li><b>Tokens By Day Of Week</b> — 7-Bar Chart With Busiest Day Highlighted.</li>
+  <li><b>Last 14 Days</b> — Daily Trend Bar Chart With Today Highlighted.</li>
+  <li><b>Efficiency</b> — Cache Hit Rate (Excellent / Healthy / Low), Output/Input Ratio (Generation vs Exploration Tag), Session Duration Median + Average.</li>
+  <li><b>Model Mix (This Week)</b> — Bar Chart Across Opus / Sonnet / Haiku / Other.</li>
+  <li><b>Top Projects</b> — All-Time Token Leaderboard Across Your Project Folders.</li>
+  <li><b>Open Anthropic Usage Page</b> Button (Top-Right) — One-Click Launch Of <b>claude.ai/settings/usage</b> For Anthropic's Authoritative Plan-Enforced Percentages. Those Live Behind An Authenticated Session We Can't Read Locally.</li>
 </ul>
 
 <h3 style="color:#1F2430">Sound Cues</h3>
@@ -861,23 +859,11 @@ class HelpDialog(QDialog):
 USAGE_CSS = """
 QDialog#usage { background: #0B0E14; }
 QLabel#u_title { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: 800; }
-QLabel#u_section { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 14px; font-weight: 800; padding: 14px 0 2px 0; }
-QLabel#u_rowname { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 700; }
-QLabel#u_rowreset { color: #8A94A6; font-family: 'Segoe UI', sans-serif; font-size: 11px; }
-QLabel#u_rowpct { color: #C6CCD8; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 600; }
+QLabel#u_section { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 13px; font-weight: 800; padding: 14px 0 4px 0; letter-spacing: 0.4px; }
 QLabel#u_muted { color: #8A94A6; font-family: 'Segoe UI', sans-serif; font-size: 11px; }
-QLabel#u_link { color: #7AA8FF; text-decoration: underline; }
-QProgressBar#u_bar {
-    background: #23283A;
-    border: none;
-    border-radius: 4px;
-    text-align: center;
-    min-height: 14px; max-height: 14px;
-    color: transparent;
-}
-QProgressBar#u_bar::chunk { background: #487CFF; border-radius: 4px; }
-QProgressBar#u_bar[urgency="hot"]::chunk  { background: #ff7a00; }
-QProgressBar#u_bar[urgency="crit"]::chunk { background: #ff2e2e; }
+QLabel#u_stat  { color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 12px; }
+QLabel#u_insight { color: #E4E8F2; font-family: 'Segoe UI', sans-serif; font-size: 12px; padding: 3px 0; }
+QLabel#u_mono  { color: #C6CCD8; font-family: Consolas, 'Courier New', monospace; font-size: 11px; padding: 1px 0; }
 QPushButton#u_btn {
     background: #1F2430;
     color: #F2F5FA;
@@ -901,29 +887,110 @@ QPushButton#u_primary:hover { background: #3768e0; }
 """
 
 
+class MiniBarChart(QWidget):
+    """Simple QPainter bar chart for token-by-hour / by-day-of-week /
+    daily-trend histograms. Lightweight: no QtCharts dep needed."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._labels: list[str] = []
+        self._values: list[float] = []
+        self._highlight: set[int] = set()
+        self._title: str = ""
+        self._fg = QColor("#487CFF")
+        self._hl = QColor("#FFB74D")
+        self.setMinimumHeight(110)
+
+    def setData(self, labels: list[str], values: list[float],
+                highlight: list[int] | None = None, title: str = "") -> None:
+        self._labels = labels
+        self._values = values
+        self._highlight = set(highlight or [])
+        self._title = title
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        if not self._values:
+            p.setPen(QColor("#8A94A6"))
+            p.setFont(QFont("Segoe UI", 10))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "— no data —")
+            return
+
+        w, h = self.width(), self.height()
+        m_top = 18 if self._title else 6
+        m_bot = 18
+        m_side = 6
+        chart_h = h - m_top - m_bot
+        chart_w = w - 2 * m_side
+
+        if self._title:
+            p.setPen(QColor("#C6CCD8"))
+            p.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+            p.drawText(m_side, m_top - 4, self._title)
+
+        n = len(self._values)
+        gap = 2
+        bar_w = max(1.0, (chart_w - (n - 1) * gap) / n)
+        max_v = max(self._values) or 1.0
+
+        for i, v in enumerate(self._values):
+            x = m_side + i * (bar_w + gap)
+            bh = (v / max_v) * (chart_h - 4)
+            y = m_top + (chart_h - 4) - bh
+            color = self._hl if i in self._highlight else self._fg
+            p.setBrush(QBrush(color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(int(x), int(y), max(1, int(bar_w)), int(bh), 2, 2)
+
+        # x-axis labels (show every other one if they'd collide)
+        p.setFont(QFont("Segoe UI", 7))
+        p.setPen(QColor("#8A94A6"))
+        fm = p.fontMetrics()
+        step = 1
+        while step < n and fm.horizontalAdvance(self._labels[0] if self._labels else "") * step * 1.3 > (bar_w + gap) * step * 2:
+            step += 1
+        for i, lbl in enumerate(self._labels):
+            if i % step != 0 and i != n - 1:
+                continue
+            x = m_side + i * (bar_w + gap) + bar_w / 2
+            tw = fm.horizontalAdvance(lbl)
+            p.drawText(int(x - tw / 2), h - 4, lbl)
+
+
 class UsageDialog(QDialog):
-    """Dark-mode 'Session & Weekly Limits' panel in the style of
-    Claude's desktop-app usage page. Progress bars are driven by local
-    transcript totals; caps are configurable (or use rough defaults).
-    A prominent 'Open Anthropic Usage Page' button links to the live
-    numbers for exact % tracking."""
+    """Dark-mode developer-oriented usage insights. No made-up progress
+    bars — just the numbers and charts that actually come out of the
+    local transcripts, plus a one-click shortcut to Anthropic's
+    authoritative usage page for the plan-enforced percentages."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("usage")
-        self.setWindowTitle("CC-Beeper-Win — Session & Limits")
+        self.setWindowTitle("CC-Beeper-Win — Session Insights")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet(BUTTON_CSS + SETTINGS_CSS + USAGE_CSS)
-        self.resize(640, 560)
+        self.resize(720, 700)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 18, 20, 16); outer.setSpacing(0)
 
+        # Header
         title_row = QHBoxLayout()
-        title = QLabel("Usage")
-        title.setObjectName("u_title")
-        title_row.addWidget(title)
-        title_row.addStretch(1)
+        title = QLabel("Session Insights"); title.setObjectName("u_title")
+        title_row.addWidget(title); title_row.addStretch(1)
+        open_page = QPushButton("Open Anthropic Usage Page  ↗")
+        open_page.setObjectName("u_primary")
+        open_page.setToolTip(
+            "Opens claude.ai/settings/usage in your default browser.\n"
+            "Anthropic's authoritative plan limits live behind an\n"
+            "authenticated session we don't have locally, so this button\n"
+            "is the reliable source for exact Session / Weekly percentages."
+        )
+        open_page.clicked.connect(self._open_anthropic)
+        title_row.addWidget(open_page)
         outer.addLayout(title_row)
 
         self._scroll = QScrollArea()
@@ -937,15 +1004,8 @@ class UsageDialog(QDialog):
         outer.addWidget(self._scroll, stretch=1)
 
         btnrow = QHBoxLayout(); btnrow.setSpacing(8)
-        open_page = QPushButton("Open Anthropic Usage Page")
-        open_page.setObjectName("u_primary")
-        open_page.clicked.connect(self._open_anthropic)
-        open_page.setToolTip("Opens claude.ai/settings/usage in your default browser —\n"
-                             "the numbers there are Anthropic's authoritative %, which\n"
-                             "require auth we don't have locally.")
-        btnrow.addWidget(open_page)
         btnrow.addStretch(1)
-        reload_btn = QPushButton("↻ Reload"); reload_btn.setObjectName("u_btn")
+        reload_btn = QPushButton("↻  Reload"); reload_btn.setObjectName("u_btn")
         reload_btn.clicked.connect(self.refresh)
         close_btn = QPushButton("Close"); close_btn.setObjectName("u_btn")
         close_btn.clicked.connect(self.hide)
@@ -964,162 +1024,218 @@ class UsageDialog(QDialog):
             if w is not None:
                 w.deleteLater()
 
-    def _user_limits(self) -> dict[str, int]:
-        """User-configurable plan caps for the progress bars. Rough
-        Anthropic-Max-ish defaults if the user hasn't set anything.
-        Override via config.json: widget.usage_limits.{session_5h, weekly_all,
-        weekly_sonnet, weekly_opus} in raw token counts."""
-        cfg = load_cfg().get("widget", {}).get("usage_limits", {}) or {}
-        return {
-            "session_5h":    int(cfg.get("session_5h")    or 1_000_000),
-            "weekly_all":    int(cfg.get("weekly_all")    or 10_000_000),
-            "weekly_sonnet": int(cfg.get("weekly_sonnet") or 10_000_000),
-            "weekly_opus":   int(cfg.get("weekly_opus")   or 3_000_000),
-        }
-
     def refresh(self) -> None:
         self._clear_inner()
         try:
-            data = requests.get(server_url("/usage"), timeout=8).json()
+            data = requests.get(server_url("/usage"), timeout=10).json()
         except Exception as e:
             err = QLabel(f"Couldn't reach server: {e}")
             err.setStyleSheet("color: #ff7a7a; font-family: Consolas, monospace; padding: 8px;")
             self._inner_layout.addWidget(err); return
 
         windows = data.get("windows") or {}
+        insights = data.get("insights") or {}
         fam_week = data.get("by_family_week") or {}
-        fam_5h   = data.get("by_family_5h")   or {}
-        limits = self._user_limits()
 
-        # ---- Current session (5h rolling) ----
-        self._inner_layout.addWidget(self._section_header("Current session"))
-        session_bucket = windows.get("last_5h") or {}
-        session_tokens = int(session_bucket.get("input", 0)) + int(session_bucket.get("output", 0))
-        session_reset = data.get("next_5h_reset")
-        self._inner_layout.addWidget(self._bar_row(
-            name="Current session",
-            resets_label=self._time_until(session_reset, fallback="rolling 5-hour window"),
-            value=session_tokens,
-            cap=limits["session_5h"],
+        # ---- Summary strip (the "how much did I use" numbers) ----
+        self._inner_layout.addWidget(self._section_header("Summary"))
+        sess = windows.get("last_5h") or {}
+        today = windows.get("today") or {}
+        week = windows.get("this_week") or {}
+        all_t = windows.get("all") or {}
+        self._inner_layout.addWidget(self._kv(
+            "Current Session (rolling 5 h)",
+            f"{self._toks(sess)}  ·  {int(sess.get('turns',0)):,} turns",
+            self._time_until(data.get("next_5h_reset"), fallback="rolling 5-hour window"),
+        ))
+        self._inner_layout.addWidget(self._kv(
+            "Today",
+            f"{self._toks(today)}  ·  {int(today.get('turns',0)):,} turns",
+            f"{int(today.get('sessions',0))} sessions so far",
+        ))
+        self._inner_layout.addWidget(self._kv(
+            "This Week",
+            f"{self._toks(week)}  ·  {int(week.get('turns',0)):,} turns",
+            self._time_until(data.get("next_week_reset"), fallback="resets Mon 00:00 local"),
+        ))
+        self._inner_layout.addWidget(self._kv(
+            "All-Time",
+            f"{self._toks(all_t)}  ·  {int(all_t.get('turns',0)):,} turns",
+            f"{int(all_t.get('sessions',0)):,} sessions ever",
         ))
 
-        # ---- Weekly limits section ----
-        self._inner_layout.addWidget(self._section_header("Weekly limits"))
-        weekly_reset = data.get("next_week_reset")
-        reset_label = self._time_until(weekly_reset, fallback="next Monday 00:00")
-
-        week_bucket = windows.get("this_week") or {}
-        week_total = int(week_bucket.get("input", 0)) + int(week_bucket.get("output", 0))
-        self._inner_layout.addWidget(self._bar_row(
-            "All models", reset_label, week_total, limits["weekly_all"],
-        ))
-        sonnet_total = int(fam_week.get("sonnet", {}).get("input", 0)) + int(fam_week.get("sonnet", {}).get("output", 0))
-        self._inner_layout.addWidget(self._bar_row(
-            "Sonnet only", reset_label, sonnet_total, limits["weekly_sonnet"],
-        ))
-        opus_total = int(fam_week.get("opus", {}).get("input", 0)) + int(fam_week.get("opus", {}).get("output", 0))
-        self._inner_layout.addWidget(self._bar_row(
-            "Opus only", reset_label, opus_total, limits["weekly_opus"],
-        ))
-        haiku_total = int(fam_week.get("haiku", {}).get("input", 0)) + int(fam_week.get("haiku", {}).get("output", 0))
-        if haiku_total > 0:
-            self._inner_layout.addWidget(self._bar_row(
-                "Haiku only", reset_label, haiku_total, limits["weekly_all"],
+        # ---- Working patterns (peak / off-peak) ----
+        self._inner_layout.addWidget(self._section_header("When You Work"))
+        peak_h = insights.get("peak_hour")
+        peak_s = insights.get("peak_hour_share", 0)
+        off = insights.get("off_peak_hours") or []
+        dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        busy_d = insights.get("busiest_dow")
+        busy_s = insights.get("busiest_dow_share", 0)
+        if peak_h is not None:
+            self._inner_layout.addWidget(self._insight(
+                f"⏰  Peak Hour: <b>{peak_h:02d}:00–{(peak_h+1)%24:02d}:00</b> "
+                f"({peak_s*100:.0f}% of your lifetime tokens)"
+            ))
+        if off:
+            off_txt = ", ".join(f"{h:02d}:00" for h in off)
+            self._inner_layout.addWidget(self._insight(
+                f"😴  Off-Peak Hours (lowest usage): <b>{off_txt}</b> — "
+                f"good slots for long background tasks"
+            ))
+        if busy_d is not None:
+            self._inner_layout.addWidget(self._insight(
+                f"📅  Busiest Day: <b>{dow_names[busy_d]}</b> "
+                f"({busy_s*100:.0f}% of your lifetime tokens)"
             ))
 
-        # ---- Raw totals ----
-        self._inner_layout.addWidget(self._section_header("Raw Totals"))
-        self._inner_layout.addWidget(self._text(
-            f"Today                : "
-            f"{int((windows.get('today') or {}).get('input', 0)) + int((windows.get('today') or {}).get('output', 0)):>12,} tokens, "
-            f"{int((windows.get('today') or {}).get('turns', 0)):>5,} turns"
-        ))
-        self._inner_layout.addWidget(self._text(
-            f"This week            : "
-            f"{week_total:>12,} tokens, "
-            f"{int(week_bucket.get('turns', 0)):>5,} turns"
-        ))
-        self._inner_layout.addWidget(self._text(
-            f"All-time             : "
-            f"{int((windows.get('all') or {}).get('input', 0)) + int((windows.get('all') or {}).get('output', 0)):>12,} tokens, "
-            f"{int((windows.get('all') or {}).get('turns', 0)):>5,} turns, "
-            f"{int((windows.get('all') or {}).get('sessions', 0)):>3,} sessions"
-        ))
+        # 24-hour chart
+        hour_tokens = data.get("hour_tokens") or []
+        hour_labels = [f"{h:02d}" for h in range(24)]
+        peak_mark = {peak_h} if peak_h is not None else set()
+        chart1 = MiniBarChart()
+        chart1.setFixedHeight(140)
+        chart1.setData(hour_labels, hour_tokens, list(peak_mark),
+                       title="Tokens By Hour Of Day (all-time; peak = orange)")
+        self._inner_layout.addWidget(chart1)
 
-        # ---- Footer with caveats ----
+        # Day-of-week chart
+        dow_tokens = data.get("dow_tokens") or []
+        busy_mark = {busy_d} if busy_d is not None else set()
+        chart2 = MiniBarChart()
+        chart2.setFixedHeight(100)
+        chart2.setData(dow_names, dow_tokens, list(busy_mark),
+                       title="Tokens By Day Of Week (all-time)")
+        self._inner_layout.addWidget(chart2)
+
+        # ---- 14-day trend ----
+        self._inner_layout.addWidget(self._section_header("Last 14 Days"))
+        daily = data.get("daily_series") or []
+        d_labels = [d.get("dow", "")[0] for d in daily]  # Mon→M etc
+        d_values = [d.get("tokens", 0) for d in daily]
+        # Highlight today (last element)
+        chart3 = MiniBarChart()
+        chart3.setFixedHeight(110)
+        chart3.setData(d_labels, d_values, [len(daily) - 1] if daily else [],
+                       title="Daily Tokens — Last 14 Days (today = orange)")
+        self._inner_layout.addWidget(chart3)
+
+        # ---- Efficiency ----
+        self._inner_layout.addWidget(self._section_header("Efficiency"))
+        cache_pct = insights.get("cache_hit_pct", 0)
+        cache_tag = ("excellent" if cache_pct >= 90 else
+                     "healthy" if cache_pct >= 70 else
+                     "low — check file churn" if cache_pct < 50 else "okay")
+        self._inner_layout.addWidget(self._insight(
+            f"🧠  Cache Hit Rate: <b>{cache_pct:.1f}%</b> ({cache_tag})"
+        ))
+        oi = insights.get("output_input_ratio", 0)
+        oi_tag = ("output-heavy (generation)" if oi >= 100 else
+                  "balanced" if oi >= 10 else "read-heavy (exploration)")
+        self._inner_layout.addWidget(self._insight(
+            f"📝  Output / Input Ratio: <b>{oi:,.1f}×</b> ({oi_tag})"
+        ))
+        avg_s = insights.get("avg_session_minutes", 0)
+        med_s = insights.get("median_session_minutes", 0)
+        if avg_s:
+            self._inner_layout.addWidget(self._insight(
+                f"⏳  Session Duration: median <b>{med_s:.0f} min</b>, "
+                f"average <b>{avg_s:.0f} min</b>"
+            ))
+
+        # ---- Model mix this week ----
+        if any(f.get("input", 0) + f.get("output", 0) for f in fam_week.values()):
+            self._inner_layout.addWidget(self._section_header("Model Mix (This Week)"))
+            labels, values = [], []
+            for f in ("opus", "sonnet", "haiku", "other"):
+                v = fam_week.get(f, {}).get("input", 0) + fam_week.get(f, {}).get("output", 0)
+                if v > 0:
+                    labels.append(f.title()); values.append(v)
+            if values:
+                chart4 = MiniBarChart()
+                chart4.setFixedHeight(90)
+                chart4.setData(labels, values, [], title="")
+                self._inner_layout.addWidget(chart4)
+
+        # ---- Top projects ----
+        projects = data.get("by_project") or []
+        if projects:
+            self._inner_layout.addWidget(self._section_header("Top Projects (All-Time)"))
+            for row in projects[:8]:
+                name = row.get("project", "?")[:44]
+                tokens = row.get("input", 0) + row.get("output", 0)
+                turns = row.get("turns", 0)
+                sessions = row.get("sessions", 0)
+                self._inner_layout.addWidget(self._mono(
+                    f"  {name:<44}  {tokens:>12,} tk  {turns:>5,} turns  {sessions:>3} sessions"
+                ))
+
+        # ---- Footer ----
         import datetime as _dt
         stamp = _dt.datetime.fromtimestamp(data.get("generated_at", 0)).strftime("%H:%M:%S")
-        footer = QLabel(
+        foot = QLabel(
             f"Last updated: {stamp}  ·  scanned {data.get('files_scanned', 0)} transcripts.  "
-            "Bars are approximated from local transcripts against configurable caps "
-            "(see <b>config.json → widget.usage_limits</b>). For the exact "
-            "Anthropic-enforced percentages, click <b>Open Anthropic Usage Page</b>."
+            f"Anthropic's plan-enforced percentages live at "
+            f"<a href='https://claude.ai/settings/usage' style='color:#7AA8FF'>claude.ai/settings/usage</a>."
         )
-        footer.setObjectName("u_muted"); footer.setWordWrap(True)
-        footer.setTextFormat(Qt.TextFormat.RichText)
-        footer.setContentsMargins(0, 16, 0, 0)
-        self._inner_layout.addWidget(footer)
+        foot.setObjectName("u_muted"); foot.setWordWrap(True)
+        foot.setTextFormat(Qt.TextFormat.RichText); foot.setOpenExternalLinks(True)
+        foot.setContentsMargins(0, 16, 0, 0)
+        self._inner_layout.addWidget(foot)
 
         self._inner_layout.addStretch(1)
 
-    # ----- widget builders ---------------------------------------------
+    # ----- formatting helpers ------------------------------------------
+
+    def _toks(self, bucket: dict[str, Any]) -> str:
+        n = int(bucket.get("input", 0)) + int(bucket.get("output", 0))
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.2f}M tokens"
+        if n >= 1_000:
+            return f"{n/1000:.1f}k tokens"
+        return f"{n:,} tokens"
 
     def _section_header(self, text: str) -> QLabel:
-        lbl = QLabel(text); lbl.setObjectName("u_section")
+        lbl = QLabel(text.upper()); lbl.setObjectName("u_section")
         return lbl
 
-    def _text(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet("color: #C6CCD8; font-family: Consolas, monospace; font-size: 11px; padding: 2px 0;")
-        return lbl
-
-    def _bar_row(self, name: str, resets_label: str, value: int, cap: int) -> QWidget:
+    def _kv(self, key: str, value: str, sub: str = "") -> QWidget:
         row = QWidget()
-        lay = QHBoxLayout(row); lay.setContentsMargins(0, 6, 0, 6); lay.setSpacing(12)
-
-        name_col = QVBoxLayout(); name_col.setSpacing(1)
-        n = QLabel(name); n.setObjectName("u_rowname")
-        r = QLabel(resets_label); r.setObjectName("u_rowreset")
-        name_col.addWidget(n); name_col.addWidget(r)
-        nc_wrap = QWidget(); nc_wrap.setLayout(name_col)
-        nc_wrap.setFixedWidth(200)
-        lay.addWidget(nc_wrap)
-
-        pct = 0.0 if cap <= 0 else (100.0 * value / cap)
-        bar = QProgressBar(); bar.setObjectName("u_bar")
-        bar.setMinimum(0); bar.setMaximum(100)
-        bar.setValue(int(min(100, max(0, pct))))
-        bar.setTextVisible(False)
-        if pct >= 85:   bar.setProperty("urgency", "crit")
-        elif pct >= 60: bar.setProperty("urgency", "hot")
-        bar.style().unpolish(bar); bar.style().polish(bar)
-        lay.addWidget(bar, stretch=1)
-
-        p = QLabel(f"{pct:.0f}% used"); p.setObjectName("u_rowpct")
-        p.setFixedWidth(80); p.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        lay.addWidget(p)
-
-        bar.setToolTip(f"{value:,} tokens of {cap:,} cap  ({pct:.1f}% used)")
-        n.setToolTip(f"{value:,} tokens used against a configured cap of {cap:,}")
+        lay = QHBoxLayout(row); lay.setContentsMargins(0, 4, 0, 4); lay.setSpacing(16)
+        k = QLabel(key); k.setObjectName("u_stat"); k.setFixedWidth(240)
+        v = QLabel(value); v.setObjectName("u_stat")
+        v.setStyleSheet("color: #F2F5FA; font-family: 'Segoe UI', sans-serif; font-size: 12px; font-weight: 700;")
+        s = QLabel(sub); s.setObjectName("u_muted")
+        lay.addWidget(k); lay.addWidget(v, stretch=1); lay.addWidget(s)
         return row
+
+    def _insight(self, html: str) -> QLabel:
+        lbl = QLabel(html); lbl.setObjectName("u_insight")
+        lbl.setTextFormat(Qt.TextFormat.RichText); lbl.setWordWrap(True)
+        return lbl
+
+    def _mono(self, text: str) -> QLabel:
+        lbl = QLabel(text); lbl.setObjectName("u_mono")
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        return lbl
 
     def _time_until(self, ts: float | None, *, fallback: str = "") -> str:
         if not ts:
-            return f"Resets — {fallback}" if fallback else "Resets —"
+            return fallback
         import datetime as _dt
         target = _dt.datetime.fromtimestamp(ts)
         now = _dt.datetime.now()
         delta = target - now
         if delta.total_seconds() <= 0:
-            return "Rolling — resets continuously"
+            return fallback or "rolling"
         total_min = int(delta.total_seconds() // 60)
         if total_min < 60:
-            return f"Resets in {total_min} min"
+            return f"resets in {total_min} min"
         hours, minutes = divmod(total_min, 60)
         if hours < 24:
-            return f"Resets in {hours} hr {minutes} min"
+            return f"resets in {hours} hr {minutes} min"
         days = hours // 24
-        return f"Resets {target.strftime('%a %H:%M')} ({days} days)"
+        return f"resets {target.strftime('%a %H:%M')}"
 
     # ----- actions ------------------------------------------------------
 
@@ -2354,7 +2470,7 @@ class BeeperWidget(QMainWindow):
         menu.addAction(self._sound_action)
 
         menu.addSeparator()
-        u = QAction("Session & Limits…", self); u.triggered.connect(self._show_usage); menu.addAction(u)
+        u = QAction("Session Insights…", self); u.triggered.connect(self._show_usage); menu.addAction(u)
         h = QAction("Help…", self); h.triggered.connect(self._show_help); menu.addAction(h)
         s = QAction("Manage Trust…", self); s.triggered.connect(self._show_settings); menu.addAction(s)
         c = QAction("Clear Session Trust", self); c.triggered.connect(self._clear_session_trust); menu.addAction(c)
