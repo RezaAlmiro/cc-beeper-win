@@ -94,6 +94,11 @@ SESSIONS: dict[str, dict[str, Any]] = {}
 STATS_CACHE: dict[str, dict[str, Any]] = {}
 STATS_MIN_REFRESH_S = 1.5
 
+# Sessions the user has explicitly closed via the widget. Future hook
+# payloads with these IDs are silently dropped so the tab doesn't come
+# back on the next tool call. In-memory only — cleared on server restart.
+DISMISSED_SESSIONS: set[str] = set()
+
 
 def _now() -> float:
     return time.time()
@@ -135,6 +140,10 @@ async def safe_json(request: Request) -> dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError:
         return {"_raw": text[:500]}
+
+
+def _is_dismissed(session_id: str) -> bool:
+    return session_id in DISMISSED_SESSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -594,6 +603,41 @@ async def trust_remove(request: Request) -> dict[str, Any]:
     return {"ok": True, "trust": TRUST.list_all()}
 
 
+@app.post("/session/dismiss")
+async def session_dismiss(request: Request) -> dict[str, Any]:
+    """User clicked Close Tab in the widget. Mark this session as
+    dismissed so future hook payloads for it are silently dropped —
+    the tab stays closed. Dismissal is in-memory only; a server
+    restart forgets every dismissal."""
+    body = await safe_json(request)
+    sid = str(body.get("session_id") or "")
+    if not sid:
+        return {"ok": False, "error": "missing session_id"}
+    DISMISSED_SESSIONS.add(sid)
+    SESSIONS.pop(sid, None)
+    STATS_CACHE.pop(sid, None)
+    log.info("session %s dismissed by user", sid[:8])
+    return {"ok": True, "dismissed": len(DISMISSED_SESSIONS)}
+
+
+@app.post("/session/undismiss")
+async def session_undismiss(request: Request) -> dict[str, Any]:
+    """Undo a previous dismiss so the session's hooks start showing up
+    again. If Claude is still running, the tab will reappear on the
+    very next hook fire."""
+    body = await safe_json(request)
+    sid = str(body.get("session_id") or "")
+    if sid:
+        DISMISSED_SESSIONS.discard(sid)
+        return {"ok": True, "dismissed": len(DISMISSED_SESSIONS)}
+    return {"ok": False, "error": "missing session_id"}
+
+
+@app.get("/session/dismissed")
+async def session_dismissed_list() -> dict[str, Any]:
+    return {"dismissed": sorted(DISMISSED_SESSIONS)}
+
+
 @app.post("/session/name")
 async def session_name(request: Request) -> dict[str, Any]:
     """Attach a user-chosen display name to a session. Persisted only in
@@ -615,9 +659,12 @@ async def session_name(request: Request) -> dict[str, Any]:
 # Hook event handlers
 # ---------------------------------------------------------------------------
 
-def _apply_hook_metadata(session_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+def _apply_hook_metadata(session_id: str, body: dict[str, Any], request: Request) -> dict[str, Any] | None:
     """Extract cwd, transcript_path, and PIDs from hook body + headers,
-    resolve the terminal HWND (once per session)."""
+    resolve the terminal HWND (once per session). Returns None if the
+    session is dismissed — callers must early-return without acting."""
+    if _is_dismissed(session_id):
+        return None
     s = _session(session_id)
     s["ts"] = _now()
 
@@ -680,6 +727,8 @@ async def user_prompt_submit(request: Request) -> JSONResponse:
     body = await safe_json(request)
     session_id = str(body.get("session_id", "unknown"))
     s = _apply_hook_metadata(session_id, body, request)
+    if s is None:  # dismissed
+        return JSONResponse({})
     prompt = str(body.get("prompt") or body.get("message") or "")
     if prompt:
         s["task"] = prompt[:2000]
@@ -751,7 +800,8 @@ async def pretooluse(request: Request) -> JSONResponse:
     tool_input = body.get("tool_input") or {}
     session_id = str(body.get("session_id") or "unknown")
 
-    _apply_hook_metadata(session_id, body, request)
+    if _apply_hook_metadata(session_id, body, request) is None:  # dismissed
+        return JSONResponse({})
 
     category = classify(tool_name, tool_input)
     flags = regex_flags(tool_name, tool_input)
@@ -866,7 +916,8 @@ async def pretooluse(request: Request) -> JSONResponse:
 async def posttooluse(request: Request) -> JSONResponse:
     body = await safe_json(request)
     session_id = str(body.get("session_id") or "unknown")
-    _apply_hook_metadata(session_id, body, request)
+    if _apply_hook_metadata(session_id, body, request) is None:
+        return JSONResponse({})
     tool_name = body.get("tool_name") or "?"
     tool_input = body.get("tool_input") or {}
     category = classify(tool_name, tool_input)
@@ -885,7 +936,8 @@ async def posttooluse(request: Request) -> JSONResponse:
 async def notification(request: Request) -> JSONResponse:
     body = await safe_json(request)
     session_id = str(body.get("session_id") or "unknown")
-    _apply_hook_metadata(session_id, body, request)
+    if _apply_hook_metadata(session_id, body, request) is None:
+        return JSONResponse({})
     ntype = str(body.get("notification_type") or "").lower()
     msg = str(body.get("message") or ntype or "Needs your attention")
     log.info("Notification session=%s type=%s: %s", session_id[:8], ntype or "?", msg[:80])
@@ -918,6 +970,8 @@ async def stop(request: Request) -> JSONResponse:
     body = await safe_json(request)
     session_id = str(body.get("session_id") or "unknown")
     s = _apply_hook_metadata(session_id, body, request)
+    if s is None:
+        return JSONResponse({})
     s["stopped_at"] = _now()
     log.info("Stop session=%s awaiting=%s", session_id[:8], bool(s.get("awaiting_input")))
     # Two kinds of "turn finished":
@@ -944,6 +998,8 @@ async def session_start(request: Request) -> JSONResponse:
     body = await safe_json(request)
     session_id = str(body.get("session_id") or "unknown")
     s = _apply_hook_metadata(session_id, body, request)
+    if s is None:  # dismissed by user
+        return JSONResponse({})
     # Idle/ready state — Claude is booted and waiting for your first prompt.
     _set_state(session_id, "snoozing",
                message="Ready — waiting for first prompt")
@@ -967,7 +1023,8 @@ async def session_end(request: Request) -> JSONResponse:
 async def stop_failure(request: Request) -> JSONResponse:
     body = await safe_json(request)
     session_id = str(body.get("session_id") or "unknown")
-    _apply_hook_metadata(session_id, body, request)
+    if _apply_hook_metadata(session_id, body, request) is None:
+        return JSONResponse({})
     log.info("StopFailure session=%s: %s", session_id[:8], body.get("error", ""))
     _set_state(session_id, "error", message=str(body.get("error", "Unknown"))[:120], ttl_s=10.0)
     return JSONResponse({})

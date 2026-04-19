@@ -635,7 +635,7 @@ Prompts And Gives You Quick Access To Session-Level Controls.
   <li><b>Meta Line</b> — Lifetime Totals For This Session: In (Input Tokens), Out (Output Tokens), Cache (Cached Reads).</li>
   <li><b>Action Circle (Centre Bottom)</b> — The Big Round Button Shows A Single-Letter Code Plus A Colour That Mirrors The State Dot. Click Does The Natural Thing For The Current State (Approve Pending, Focus Terminal, Etc.). Flashes On States That Need Your Attention.</li>
   <li><b>◀ / ▶ Arrows</b> — Cycle Through Active Sessions. Size Matches The State Circle So The Bottom Row Feels Balanced.</li>
-  <li><b>Session Tabs (Top Of The Panel)</b> — Browser-Style Tabs Integrated Into The Top Edge Of The Glass Body. Each Tab Carries A 3-Pixel State-Coloured Stripe Along Its Top, So You Can See Every Session's Status At A Glance. The Active Tab Lifts Slightly, Has A Thicker Coloured Stripe, And Blends Into The Body Below. Click Any Tab To Switch. <b>Right-Click A Tab</b> For A Per-Tab Menu: Rename, Send Slash Command, Export Stats, Close Tab. New Sessions Appear As New Tabs Automatically.</li>
+  <li><b>Session Tabs (Top Of The Panel)</b> — Browser-Style Tabs Integrated Into The Top Edge Of The Glass Body. Each Tab Carries A 3-Pixel State-Coloured Stripe Along Its Top, So You Can See Every Session's Status At A Glance. The Active Tab Lifts Slightly, Has A Thicker Coloured Stripe, And Blends Into The Body Below. Click Any Tab To Switch. <b>Right-Click A Tab</b> For A Per-Tab Menu: Rename, Send Slash Command, Export Stats, Close Tab. New Sessions Appear As New Tabs Automatically; <b>Close Tab Is Sticky</b> — A Dismissed Tab Won't Come Back Just Because Claude Fires Another Tool Call.</li>
   <li><b>☰ Playlist Button (Far Left Of The Tab Strip)</b> — Opens A Menu Listing Every Active Session With Its Coloured State Dot. A Third Way To Switch (Alongside Tabs And ◀ / ▶). Useful When You Have Many Tabs And Want A Compact Scroll-Able List.</li>
   <li><b>⇣ Commands ▾</b> — Dropdown With /compact, /clear, /cost, /model, /resume. Focuses The Session's Terminal And Types The Command.</li>
   <li><b>✎ Rename</b> — Opens A Small Text Dialog To Set A Custom Tab Name.</li>
@@ -1326,24 +1326,26 @@ class BeeperWidget(QMainWindow):
         self._send_cmd(cmd)
 
     def _close_tab(self, sid: str) -> None:
-        """Drop the session from the widget. If the underlying Claude
-        process keeps firing hooks, the tab will return on its next hook;
-        if it doesn't, the tab stays gone. Useful for clearing stale
-        entries without closing the terminal."""
+        """Dismiss the session from the widget permanently. Future hook
+        payloads from this session_id are silently dropped by the server
+        so the tab stays gone even if the underlying Claude keeps
+        running. Dismissal is cleared when the hook server restarts."""
         snap = next((s for s in self._sessions if s["session_id"] == sid), None)
         name = session_label(snap) if snap else sid[:8]
         reply = QMessageBox.question(
             self, "Close Tab",
-            f"Remove this tab from the widget?\n\n  {name}\n\n"
-            "(The underlying Claude Code session isn't killed. If it's "
-            "still running the tab will reappear on its next hook.)",
+            f"Stop showing this tab?\n\n  {name}\n\n"
+            "The underlying Claude Code session isn't killed — it keeps "
+            "running in your terminal. It just won't reappear on the "
+            "widget, even on new tool calls. (Reopens if you restart the "
+            "hook server, or the session naturally ends.)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Yes,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            requests.post(server_url("/sessionend"),
+            requests.post(server_url("/session/dismiss"),
                           json={"session_id": sid}, timeout=2)
         except Exception:
             pass
