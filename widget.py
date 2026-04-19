@@ -328,35 +328,36 @@ QPushButton#arrowCircle {
 QPushButton#arrowCircle:hover { border: 1px solid #1F2430; background: rgba(255,255,255,230); }
 
 /* Browser-style session tabs integrated into the top of the glass panel.
-   Active tab blends into the body; inactives are dimmer and slightly
-   shorter. Each tab carries a state-coloured stripe on its top edge. */
+   Tabs fill nearly the full height of the strip so labels are legible;
+   the active tab body blends into the panel below. Top-edge stripe is
+   state-coloured. */
 QPushButton.miniTab {
     background: rgba(255, 255, 255, 110);
     color: #1F2430;
-    border: 1px solid rgba(0, 0, 0, 35);
+    border: 1px solid rgba(0, 0, 0, 40);
     border-bottom: none;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     font-family: 'Segoe UI', sans-serif;
-    font-size: 11px; font-weight: 600;
-    padding: 6px 12px 4px 12px;
-    min-height: 22px;
+    font-size: 12px; font-weight: 600;
+    padding: 8px 14px 6px 14px;
+    min-height: 28px;
 }
 QPushButton.miniTab:hover {
     background: rgba(255, 255, 255, 180);
 }
 QPushButton.miniTab[active="true"] {
-    background: rgba(255, 255, 255, 240);
+    background: rgba(255, 255, 255, 245);
     color: #0B1020;
-    border: 1px solid rgba(0, 0, 0, 70);
+    border: 1px solid rgba(0, 0, 0, 75);
     border-bottom: none;
     font-weight: 800;
-    padding: 8px 12px 6px 12px;
+    padding: 10px 14px 6px 14px;
 }
-/* State-colour stripe sitting on top of each tab (all tabs). Top border
-   thickness expands slightly when active for extra emphasis. */
+/* State-colour stripe on the top edge — 3 px for inactive, 4 px for active.
+   Keys mirror the action-circle's state names exactly. */
 QPushButton.miniTab[stateKey="idle"]     { border-top: 3px solid #9AA3B2; }
 QPushButton.miniTab[stateKey="done"]     { border-top: 3px solid #4CD98D; }
 QPushButton.miniTab[stateKey="working"]  { border-top: 3px solid #FFB74D; }
@@ -370,18 +371,22 @@ QPushButton.miniTab[active="true"][stateKey="input"]    { border-top: 4px solid 
 QPushButton.miniTab[active="true"][stateKey="approval"] { border-top: 4px solid #FF7A00; }
 QPushButton.miniTab[active="true"][stateKey="error"]    { border-top: 4px solid #8B0000; }
 
-/* Playlist / session-picker button on the far left of the tab strip */
+/* Playlist / session-picker button on the far left of the tab strip.
+   Same visual weight as a tab so the strip reads as one continuous row. */
 QPushButton#playlistBtn {
     background: rgba(255, 255, 255, 150);
     color: #1F2430;
-    border: 1px solid rgba(0, 0, 0, 35);
+    border: 1px solid rgba(0, 0, 0, 40);
     border-bottom: none;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
     font-family: 'Segoe UI', sans-serif;
-    font-size: 14px; font-weight: 800;
-    padding: 4px 10px 4px 10px;
-    min-height: 26px;
+    font-size: 15px; font-weight: 800;
+    padding: 6px 12px;
+    min-height: 28px;
+    min-width: 30px;
 }
 QPushButton#playlistBtn:hover { background: rgba(255, 255, 255, 220); }
 
@@ -749,21 +754,23 @@ class BeeperWidget(QMainWindow):
         self.glass.setGraphicsEffect(shadow)
 
         # ---------------- Foreground layout ----------------
+        # Zero top margin: tabs sit flush against the glass's top edge so
+        # there's no dead "headroom" strip of glass above the tabs.
         root = QVBoxLayout(container)
-        root.setContentsMargins(16, 12, 16, 12)
+        root.setContentsMargins(16, 0, 16, 12)
         root.setSpacing(8)
 
         # Integrated browser-style tab strip sitting right on top of the
-        # glass body. The ☰ playlist button on the left opens a full session
-        # menu; browsertabs to the right of it take their natural widths
+        # glass body. Height matches the tabs' natural footprint (one
+        # rowful of content, no extra padding), so there's no wasted
+        # headroom. The ☰ playlist button on the left opens a full
+        # session menu; tabs to the right of it take their natural widths
         # (like Windows Terminal) and grow as sessions are added.
         self.tabbar = QWidget(container)
-        self.tabbar.setFixedHeight(32)
+        self.tabbar.setFixedHeight(36)
         self.tabbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.tabbar_layout = QHBoxLayout(self.tabbar)
-        # Negative top margin pulls the tabs up so they visually merge into
-        # the panel's top edge rather than floating above it.
-        self.tabbar_layout.setContentsMargins(10, -2, 10, 0)
+        self.tabbar_layout.setContentsMargins(10, 4, 10, 0)
         self.tabbar_layout.setSpacing(2)
 
         self.btn_playlist = QPushButton("☰", self.tabbar)
